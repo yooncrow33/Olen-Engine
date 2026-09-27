@@ -12,6 +12,7 @@ import com.fw.main.utils.input.mouse.MouseInterface;
 import com.fw.main.utils.io.IoUtils;
 import com.fw.main.utils.platform.system.asset.AssetManager;
 import com.fw.main.utils.platform.system.asset.Sound;
+import com.fw.main.utils.platform.system.asset.Texture;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
 import com.fw.main.utils.platform.system.performance.PerformanceRecorder;
 import com.fw.main.utils.platform.system.scene.Bgm;
@@ -52,7 +53,7 @@ public class Test extends Base {
                 setUseConsole(true).
                 setCloseWindowWithKillVM(false).
                 setPerformanceRecorderOption(PerformanceRecorder.CaptureMode.EVERY_FRAME,"test").
-                setRenderingOption(RenderingOption.CRT)
+                setRenderingOption(RenderingOption.LEGACY)
         );
     }
 
@@ -103,6 +104,8 @@ public class Test extends Base {
     public void init(BaseInit init) {
         new TestBindingLegacy(this);
 
+        init.getAssetInit().registerBootTexture("olen", IoUtils.getEngineResourceStream("Olen.png"));
+
         ko.setFocused(true);
         ko.registerKoreanObjectEventListener(new TextObjectEventListener() {
             @Override
@@ -119,8 +122,8 @@ public class Test extends Base {
         assetManager.mallocTexturePool(3000);
         assetManager.mallocLazyLoadPool(500);
 
-        for (int i = 0; i < 1000; i++) {
-            init.getAssetInit().registerBootTexture("temp_" + i, IoUtils.getEngineResourceStream("CCE.png"));
+        for (int i = 0; i < 100; i++) {
+            //init.getAssetInit().registerBootTexture("temp_" + i, IoUtils.getEngineResourceStream("CCE.png"));
         }
 
         init.getAssetInit();
@@ -178,6 +181,10 @@ public class Test extends Base {
 
         g.setColor(Color.CYAN);
         RU.drawStringWithCursor(g, ko, 50, 130, 5, RU.CursorPosition.BOTTOM);
+
+        g.setColor(Color.black);
+        g.fillRect(0,0,1920,1080);
+        g.drawImage(assetManager.getTexture("olen").getVolatileImage(),0,0,1920,1080,null);
     }
 
     public static void main(String[] args) {

@@ -118,7 +118,7 @@ public class AssetManager {
      * @param eventKey the event key associated with LAZY loading
      * @return the loaded {@link Texture} instance
      */
-    public Texture loadTexture(LoadMode mode, String assetKey, InputStream is, String eventKey) {
+    public synchronized Texture loadTexture(LoadMode mode, String assetKey, InputStream is, String eventKey) {
         if (is == null) {
             throw new IllegalArgumentException("InputStream cannot be null for texture assetKey: " + assetKey);
         }
@@ -139,14 +139,34 @@ public class AssetManager {
                 throw new RuntimeException("SYNC loading fail: " + assetKey, e);
             }
         } else if (mode == LoadMode.LAZY) {
-            DynamicAssetObject dao = getFreeDao();
+            DynamicAssetObject dao;
+            try {
+                dao = getFreeDao();
+            } catch (RuntimeException e) {
+                texture.close();
+                freePool.offer(texture);
+                throw e;
+            }
             dao.init(() -> {
                 try {
                     texture.loadData();
+                    synchronized (AssetManager.this) {
+                        if (!dao.isCancelled()) textureActiveMap.put(assetKey, texture);
+                    }
                 } catch (Exception e) {
-                    texture.close();
-                    freePool.offer(texture);
+                    synchronized (AssetManager.this) {
+                        texture.close();
+                        freePool.offer(texture);
+                    }
                     throw new RuntimeException("LAZY loading fail: " + assetKey, e);
+                }
+            }, () -> {
+                synchronized (AssetManager.this) {
+                    if (dao.isCancelled() && texture.isInUse()) {
+                        texture.close();
+                        freePool.offer(texture);
+                    }
+                    recycleTask(assetKey, dao);
                 }
             });
             pendingObjects.put(assetKey, dao);
@@ -165,7 +185,7 @@ public class AssetManager {
      * @param eventKey the event key associated with LAZY loading
      * @return the loaded {@link SoundAsset} instance, or {@code null} if in LAZY mode
      */
-    public SoundAsset loadSound(LoadMode mode, String assetKey, InputStream is, String eventKey) {
+    public synchronized SoundAsset loadSound(LoadMode mode, String assetKey, InputStream is, String eventKey) {
         if (is == null) {
             throw new IllegalArgumentException("InputStream cannot be null for sound assetKey: " + assetKey);
         }
@@ -196,11 +216,18 @@ public class AssetManager {
                     if (sound == null) {
                         throw new RuntimeException("Failed to load sound instance: " + assetKey);
                     }
-                    soundActiveMap.put(assetKey, sound);
+                    synchronized (AssetManager.this) {
+                        if (dao.isCancelled()) {
+                            sound.stop();
+                            sound.free();
+                        } else {
+                            soundActiveMap.put(assetKey, sound);
+                        }
+                    }
                 } catch (Exception e) {
                     throw new RuntimeException("LAZY sound loading fail: " + assetKey, e);
                 }
-            });
+            }, () -> recycleTask(assetKey, dao));
             pendingObjects.put(assetKey, dao);
             pendingEvents.computeIfAbsent(eventKey, k -> new CopyOnWriteArrayList<>()).add(dao);
         }
@@ -218,7 +245,7 @@ public class AssetManager {
      * @param eventKey the event key associated with LAZY loading
      * @return the loaded {@link MusicAsset} instance, or {@code null} if in LAZY mode
      */
-    public MusicAsset loadMusic(LoadMode mode, MusicType type, String assetKey, InputStream is, String eventKey) {
+    public synchronized MusicAsset loadMusic(LoadMode mode, MusicType type, String assetKey, InputStream is, String eventKey) {
         if (is == null) {
             throw new IllegalArgumentException("InputStream cannot be null for music assetKey: " + assetKey);
         }
@@ -249,11 +276,18 @@ public class AssetManager {
                     if (music == null) {
                         throw new RuntimeException("Failed to load music instance: " + assetKey);
                     }
-                    musicActiveMap.put(assetKey, music);
+                    synchronized (AssetManager.this) {
+                        if (dao.isCancelled()) {
+                            music.stop();
+                            music.free();
+                        } else {
+                            musicActiveMap.put(assetKey, music);
+                        }
+                    }
                 } catch (Exception e) {
                     throw new RuntimeException("LAZY music loading fail: " + assetKey, e);
                 }
-            });
+            }, () -> recycleTask(assetKey, dao));
             pendingObjects.put(assetKey, dao);
             pendingEvents.computeIfAbsent(eventKey, k -> new CopyOnWriteArrayList<>()).add(dao);
         }
@@ -268,7 +302,7 @@ public class AssetManager {
         };
     }
 
-    public void event(String eventKey) {
+    public synchronized void event(String eventKey) {
         List<DynamicAssetObject> tasks = pendingEvents.remove(eventKey);
         if (tasks != null) {
             for (DynamicAssetObject task : tasks) {
@@ -277,109 +311,45 @@ public class AssetManager {
         }
     }
 
-    public Texture getTexture(String assetKey) {
-        Texture tex = textureActiveMap.get(assetKey);
-        if (tex != null) return tex;
+    public Texture getTexture(String assetKey) { return textureActiveMap.get(assetKey); }
 
-        DynamicAssetObject dao = pendingObjects.get(assetKey);
-        if (dao != null) {
-            if (dao.isError()) {
-                free(AssetType.TEXTURE, assetKey);
-                return null;
-            }
-            if (dao.isLoaded()) {
-                synchronized (this) {
-                    dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        dao.reset();
-                        daoFreePool.offer(dao);
+    public Sound getSound(String assetKey) { return soundActiveMap.get(assetKey); }
 
-                        if (pool != null) {
-                            for (PooledTexture t : pool) {
-                                if (t != null && t.isInUse() && assetKey.equals(t.getAssetKey())) {
-                                    textureActiveMap.put(assetKey, t);
-                                    return t;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return null;
+    public Music getMusic(String assetKey) { return musicActiveMap.get(assetKey); }
+
+    private synchronized void recycleTask(String assetKey, DynamicAssetObject dao) {
+        pendingObjects.remove(assetKey, dao);
+        dao.reset();
+        daoFreePool.offer(dao);
     }
 
-    public Sound getSound(String assetKey) {
-        Sound sound = soundActiveMap.get(assetKey);
-        if (sound != null) return sound;
+    private boolean cancelPending(String assetKey) {
+        DynamicAssetObject dao = pendingObjects.remove(assetKey);
+        if (dao == null) return false;
 
-        DynamicAssetObject dao = pendingObjects.get(assetKey);
-        if (dao != null) {
-            if (dao.isError()) {
-                free(AssetType.SOUND, assetKey);
-                return null;
-            }
-            if (dao.isLoaded()) {
-                synchronized (this) {
-                    dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        dao.reset();
-                        daoFreePool.offer(dao);
-                        return soundActiveMap.get(assetKey);
-                    }
-                }
-            }
-        }
-        return null;
-    }
+        pendingEvents.values().forEach(list -> list.remove(dao));
+        dao.cancel();
+        if (dao.isStarted()) return true;
 
-    public Music getMusic(String assetKey) {
-        Music music = musicActiveMap.get(assetKey);
-        if (music != null) return music;
-
-        DynamicAssetObject dao = pendingObjects.get(assetKey);
-        if (dao != null) {
-            if (dao.isError()) {
-                free(AssetType.MUSIC, assetKey);
-                return null;
-            }
-            if (dao.isLoaded()) {
-                synchronized (this) {
-                    dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        dao.reset();
-                        daoFreePool.offer(dao);
-                        return musicActiveMap.get(assetKey);
-                    }
-                }
-            }
-        }
-        return null;
+        dao.reset();
+        daoFreePool.offer(dao);
+        return false;
     }
 
     public synchronized void free(AssetType assetType, String assetKey) {
+        boolean loading = cancelPending(assetKey);
         switch (assetType) {
             case TEXTURE -> {
                 PooledTexture tex = textureActiveMap.remove(assetKey);
                 if (tex != null) {
                     tex.close();
                     freePool.offer(tex);
-                } else {
-                    DynamicAssetObject dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        pendingEvents.values().forEach(list -> list.remove(dao));
-
-                        dao.reset();
-                        daoFreePool.offer(dao);
-
-                        if (pool != null) {
-                            for (PooledTexture t : pool) {
-                                if (t != null && t.isInUse() && assetKey.equals(t.getAssetKey())) {
-                                    t.close();
-                                    freePool.offer(t);
-                                    break;
-                                }
-                            }
+                } else if (!loading && pool != null) {
+                    for (PooledTexture t : pool) {
+                        if (t != null && t.isInUse() && assetKey.equals(t.getAssetKey())) {
+                            t.close();
+                            freePool.offer(t);
+                            break;
                         }
                     }
                 }
@@ -389,13 +359,6 @@ public class AssetManager {
                 if (sound != null) {
                     sound.stop();
                     sound.free();
-                } else {
-                    DynamicAssetObject dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        pendingEvents.values().forEach(list -> list.remove(dao));
-                        dao.reset();
-                        daoFreePool.offer(dao);
-                    }
                 }
             }
             case MUSIC -> {
@@ -403,21 +366,26 @@ public class AssetManager {
                 if (music != null) {
                     music.stop();
                     music.free();
-                } else {
-                    DynamicAssetObject dao = pendingObjects.remove(assetKey);
-                    if (dao != null) {
-                        pendingEvents.values().forEach(list -> list.remove(dao));
-                        dao.reset();
-                        daoFreePool.offer(dao);
-                    }
                 }
             }
         }
     }
 
     public synchronized void disposeAll() {
+        Set<PooledTexture> loadingTextures = new HashSet<>();
+        if (pool != null) {
+            for (PooledTexture tex : pool) {
+                if (tex != null) {
+                    String assetKey = tex.getAssetKey();
+                    DynamicAssetObject dao = assetKey == null ? null : pendingObjects.get(assetKey);
+                    if (dao != null && dao.isStarted()) loadingTextures.add(tex);
+                }
+            }
+        }
         textureActiveMap.clear();
-        pendingObjects.clear();
+        for (String assetKey : new ArrayList<>(pendingObjects.keySet())) {
+            cancelPending(assetKey);
+        }
         pendingEvents.clear();
 
         for (SoundAsset sound : soundActiveMap.values()) {
@@ -438,19 +406,27 @@ public class AssetManager {
 
         if (pool != null) {
             for (PooledTexture tex : pool) {
-                if (tex != null) tex.close();
+                if (tex != null && !loadingTextures.contains(tex)) tex.close();
             }
         }
         freePool.clear();
-        if (pool != null) Collections.addAll(freePool, pool);
+        if (pool != null) {
+            for (PooledTexture tex : pool) {
+                if (tex != null && !loadingTextures.contains(tex)) freePool.offer(tex);
+            }
+        }
 
         if (daoPool != null) {
             for (DynamicAssetObject dao : daoPool) {
-                if (dao != null) dao.reset();
+                if (dao != null && !dao.isStarted()) dao.reset();
             }
         }
         daoFreePool.clear();
-        if (daoPool != null) Collections.addAll(daoFreePool, daoPool);
+        if (daoPool != null) {
+            for (DynamicAssetObject dao : daoPool) {
+                if (dao != null && !dao.isStarted()) daoFreePool.offer(dao);
+            }
+        }
 
         InternalSoundModule.shutdown();
     }

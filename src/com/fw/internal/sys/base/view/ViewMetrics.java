@@ -1,8 +1,8 @@
 package com.fw.internal.sys.base.view;
 
 public class ViewMetrics implements IViewMetrics, IMouse {
-    private static final int VIRTUAL_WIDTH = 1920;
-    private static final int VIRTUAL_HEIGHT = 1080;
+    private final int VIRTUAL_WIDTH;
+    private final int VIRTUAL_HEIGHT;
     private static final double SCALE_EPSILON = 0.000_001;
 
     private static final float CURVE_X = 0.05f;
@@ -28,14 +28,17 @@ public class ViewMetrics implements IViewMetrics, IMouse {
     private volatile int virtualMouseX;
     private volatile int virtualMouseY;
 
-    public ViewMetrics(IFrameSize size) {
-        this(size, false);
+    public ViewMetrics(IFrameSize size,int window_width, int window_height) {
+        this(size, false,window_width,window_height);
     }
 
-    public ViewMetrics(IFrameSize size, boolean useIntegerPhysicalScaling) {
+    public ViewMetrics(IFrameSize size, boolean useIntegerPhysicalScaling, int window_width, int window_height) {
         this.size = size;
         this.useIntegerPhysicalScaling = useIntegerPhysicalScaling;
+        this.VIRTUAL_WIDTH = window_width;
+        this.VIRTUAL_HEIGHT = window_height;
     }
+
 
     public void calculateViewMetrics() {
         int windowWidth = size.getComponentWidth();
@@ -55,8 +58,6 @@ public class ViewMetrics implements IViewMetrics, IMouse {
                 Math.abs(deviceScaleX - deviceScaleY) < SCALE_EPSILON) {
             double physicalScale = requestedScale * deviceScaleX;
 
-            // 1배 이상의 물리 배율에서는 화면 안에 완전히 들어오는 가장 큰 정수 배율을 사용한다.
-            // 1배 미만을 억지로 스냅하면 화면이 지나치게 작아지므로 원래 배율을 유지한다.
             if (physicalScale >= 1.0 - SCALE_EPSILON) {
                 double integerPhysicalScale = Math.max(
                         1.0,

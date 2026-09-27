@@ -37,25 +37,47 @@ import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.LockSupport;
 
 public abstract class Base extends Canvas implements IFrameSize, PerformanceRecorder.BaseWorkTimeProvider, AccessConsole {
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
     public static String version = "PRE 0.2.0 in dev";
-    public JFrame frame = new JFrame("CraftCanvas Engine");
+    public JFrame frame = new JFrame("Olen Engine");
+
+    // --- Fullscreen and resolution states ---
+    private boolean fullScreen = false;
+    private boolean changeResolution = false;
+    private int targetResWidth = -1;
+    private int targetResHeight = -1;
+    protected int WINDOW_WIDTH;
+    protected int WINDOW_HEIGHT;
+    private int targetBitDepth = DisplayMode.BIT_DEPTH_MULTI;
+    private int targetRefreshRate = DisplayMode.REFRESH_RATE_UNKNOWN;
+    private DisplayMode originalDisplayMode = null;
+    private GraphicsDevice graphicsDevice = null;
 
     private Thread logicThread;
     private Thread renderThread;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean isExiting = new AtomicBoolean(false);
     private volatile long renderPausedUntilNanos = 0L;
-    private final RenderingOption renderingOption;
+    private RenderingOption renderingOption = RenderingOption.DEFAULT;
+    private WaitMode waitMode = WaitMode.OS_SLEEP;
+    private volatile boolean builderInitialized;
 
     private int fpsCounter = 0;
     private volatile int currentFps = 0;
@@ -81,9 +103,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     final AtomicBoolean initLoadEnd = new AtomicBoolean(false);
     final ArrayList<DynamicAsset> sysLoadStack = new ArrayList<>();
     public final AtomicBoolean isChangeScene = new AtomicBoolean(false);
+    public final AtomicBoolean isSceneLoading = new AtomicBoolean(false);
     public Scene getCurrentScene() { return currentScene; }
-    Scene currentScene = null;
-    Scene pendingScene;
+    volatile Scene currentScene = null;
+    volatile Scene pendingScene;
 
     private BufferStrategy bufferStrategy;
     private VolatileImage vramBuffer;
@@ -108,7 +131,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private int crtCachedH = -1;
     private boolean crtPrecomputed = false;
 
-    private final boolean crtJitterEnabled;
+    private boolean crtJitterEnabled = true;
     private float crtScanlineFlickerTimer = 0.0f;
 
     private static final Color[] CRT_PULSE_COLORS = new Color[256];
@@ -127,13 +150,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private final ArrayList<Integer> renderTargetYs = new ArrayList<>(1024);
 
     private TextModule textModule;
-    private MouseAtBase mouseAtBase;
+    private volatile MouseAtBase mouseAtBase = new MouseAtBase(this);
 
-    private PerformanceRecorder recorder;
-    private final boolean closeWindowWithKillVM;
+    private volatile PerformanceRecorder recorder;
+    private boolean closeWindowWithKillVM = true;
 
-    private ConsoleCMD consoleCMD = null;
+    private volatile ConsoleCMD consoleCMD = null;
     public ConsoleCMD getConsoleCMD() { return consoleCMD; }
+    ErrorBoxManager errorBoxManager = new ErrorBoxManager();
     Console console = null;
     private Texture logo;
 
@@ -161,11 +185,36 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private volatile String currentLoadingMessage = "Initializing...";
     private volatile float loadingProgress = 0.0f;
 
+    /** Creates an engine. A null builder can be supplied later with {@link #setBuilder(Builder)}. */
     public Base(Builder builder) {
+        if (builder != null) initializeBuilder(builder);
+    }
+
+    /** Applies a builder once, before the engine is launched. */
+    public synchronized void setBuilder(Builder builder) {
+        if (builderInitialized) throw new IllegalStateException("builder is already initialized");
+        initializeBuilder(java.util.Objects.requireNonNull(builder, "builder"));
+    }
+
+    /** Applies a builder and starts the engine. */
+    public void setBuilderAndLaunch(Builder builder) {
+        setBuilder(builder);
+        launch();
+    }
+
+    /** Returns whether the builder has been applied. */
+    public final boolean isBuilderInitialized() { return builderInitialized; }
+
+    private void initializeBuilder(Builder builder) {
         if (!Core.isIsSetConfig()) {
-            System.err.println("config is null! you should init config to Core.java in the static block!");
-            System.exit(0);
+            if (builder.coreConfig != null) Core.setConfig(builder.coreConfig.build());
+            else if (builder.coreConfigValue != null) Core.setConfig(builder.coreConfigValue);
         }
+        if (!Core.isIsSetConfig()) {
+            throw new IllegalStateException("Set Core config with Base.Builder.setCoreConfig(...) or Core.setConfig(...)");
+        }
+
+        builder.loadSavedValues();
 
         if (Core.get().isUseKoreanModule()) {
             textModule = new TextModule(this);
@@ -177,14 +226,20 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         this.closeWindowWithKillVM = builder.closeWindowWithKillVM;
         this.renderingOption = builder.renderingOption;
+        this.waitMode = builder.waitMode;
         this.crtJitterEnabled = builder.crtJitterEnabled;
 
-        sysLoadStack.add(() -> {
-            mouseAtBase = new MouseAtBase(this);
-            if (baseInit.initScene != null) {
-                currentScene = baseInit.initScene;
-            }
-        });
+        // Bind fullscreen and resolution options
+        this.fullScreen = builder.fullScreen;
+        this.changeResolution = builder.changeResolution;
+        this.targetResWidth = builder.targetResWidth;
+        this.targetResHeight = builder.targetResHeight;
+        this.targetBitDepth = builder.targetBitDepth;
+        this.targetRefreshRate = builder.targetRefreshRate;
+        this.WINDOW_WIDTH = builder.virtualScreenWidth;
+        this.WINDOW_HEIGHT = builder.virtualScreenHeight;
+        viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling(),WINDOW_WIDTH,WINDOW_HEIGHT);
+
         sysLoadStack.add(() -> {
             if (builder.integerKey != null) { Fw.add(builder.integerKey, this); }
             if (builder.stringKey != null) { Fw.add(builder.stringKey, this); }
@@ -202,7 +257,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         sysLoadStack.add(() -> setMouse(getMouse()));
         sysLoadStack.add(() -> {
             if (console != null) { io.addIoObject("quickputsystem", console.getQuickPutManager()); }
-
+        });
+        sysLoadStack.add(() -> {
             captureMode = builder.performanceRecorderOption;
             if (captureMode == PerformanceRecorder.CaptureMode.DO_NOT) return;
 
@@ -213,18 +269,47 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 recorder.exit(builder.dumpPerformanceDataFileName);
             }));
         });
+        builder.saveValues();
+        builderInitialized = true;
     }
 
+    public enum WaitMode {
+        OS_SLEEP, HYBRID, BUSY_WAIT
+    }
+
+    /** Configures the base renderer and startup services. */
     public static class Builder {
+        Config.Builder coreConfig;
+        Config coreConfigValue;
         String stringKey;
         Integer integerKey;
         boolean consoleUse;
         PerformanceRecorder.CaptureMode performanceRecorderOption = PerformanceRecorder.CaptureMode.DO_NOT;
         String dumpPerformanceDataFileName;
         RenderingOption renderingOption = RenderingOption.DEFAULT;
+        WaitMode waitMode = WaitMode.OS_SLEEP;
         boolean closeWindowWithKillVM = true;
         boolean crtJitterEnabled = true;
         String title = "null";
+        int virtualScreenWidth = 1920;
+        int virtualScreenHeight = 1080;
+
+        // Fullscreen and resolution configuration fields
+        boolean fullScreen = false;
+        boolean changeResolution = false;
+        int targetResWidth = -1;
+        int targetResHeight = -1;
+        int targetBitDepth = DisplayMode.BIT_DEPTH_MULTI;
+        int targetRefreshRate = DisplayMode.REFRESH_RATE_UNKNOWN;
+
+        /** Supplies Core configuration without a static initializer. */
+        public Builder setCoreConfig(Config.Builder config) {
+            coreConfig = java.util.Objects.requireNonNull(config); coreConfigValue = null; return this;
+        }
+        /** Supplies an already built Core configuration without a static initializer. */
+        public Builder setCoreConfig(Config config) {
+            coreConfigValue = java.util.Objects.requireNonNull(config); coreConfig = null; return this;
+        }
 
         public Builder setStringKey(String stringKey) {
             this.stringKey = stringKey;
@@ -243,6 +328,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         public Builder setRenderingOption(RenderingOption renderingOption) {
             this.renderingOption = renderingOption;
+            return this;
+        }
+
+        public Builder setWaitMode(WaitMode waitMode) {
+            this.waitMode = java.util.Objects.requireNonNull(waitMode);
             return this;
         }
 
@@ -265,6 +355,101 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         public Builder setTitle(String title) {
             this.title = title;
             return this;
+        }
+
+        /** Sets whether to use full screen */
+        public Builder setFullScreen(boolean fullScreen) {
+            this.fullScreen = fullScreen;
+            return this;
+        }
+
+        /** Sets the forced resolution on entering full screen (width x height) */
+        public Builder setDisplayResolution(int width, int height) {
+            return setDisplayResolution(width, height, DisplayMode.BIT_DEPTH_MULTI, DisplayMode.REFRESH_RATE_UNKNOWN);
+        }
+
+        public Builder setVirtualScreenWidth(int virtualScreenWidth) {
+            this.virtualScreenWidth = virtualScreenWidth;
+            return this;
+        }
+
+        public Builder setVirtualScreenHeight(int virtualScreenHeight) {
+            this.virtualScreenHeight = virtualScreenHeight;
+            return this;
+        }
+
+        /** Sets detailed display parameters on entering full screen (width x height x bit depth x refresh rate) */
+        public Builder setDisplayResolution(int width, int height, int bitDepth, int refreshRate) {
+            this.changeResolution = true;
+            this.targetResWidth = width;
+            this.targetResHeight = height;
+            this.targetBitDepth = bitDepth;
+            this.targetRefreshRate = refreshRate;
+            return this;
+        }
+
+        private void loadSavedValues() {
+            consoleUse = savedBoolean("base.consoleUse", consoleUse);
+            closeWindowWithKillVM = savedBoolean("base.closeWindowWithKillVM", closeWindowWithKillVM);
+            crtJitterEnabled = savedBoolean("base.crtJitterEnabled", crtJitterEnabled);
+            fullScreen = savedBoolean("base.fullScreen", fullScreen);
+            changeResolution = savedBoolean("base.changeResolution", changeResolution);
+
+            try {
+                targetResWidth = Integer.parseInt(SettingFiles.read("base.targetResWidth", String.valueOf(targetResWidth)));
+                targetResHeight = Integer.parseInt(SettingFiles.read("base.targetResHeight", String.valueOf(targetResHeight)));
+                targetBitDepth = Integer.parseInt(SettingFiles.read("base.targetBitDepth", String.valueOf(targetBitDepth)));
+                targetRefreshRate = Integer.parseInt(SettingFiles.read("base.targetRefreshRate", String.valueOf(targetRefreshRate)));
+                virtualScreenHeight = Integer.parseInt(SettingFiles.read("base.virtualScreenHeight", String.valueOf(virtualScreenHeight)));
+                virtualScreenWidth = Integer.parseInt(SettingFiles.read("base.virtualScreenWidth", String.valueOf(virtualScreenWidth)));
+            } catch (NumberFormatException ignored) {}
+
+            try {
+                renderingOption = RenderingOption.valueOf(SettingFiles.read("base.renderingOption", renderingOption.name()));
+            } catch (IllegalArgumentException ignored) { }
+            try {
+                waitMode = WaitMode.valueOf(SettingFiles.read("base.waitMode", waitMode.name()));
+            } catch (IllegalArgumentException ignored) { }
+            try {
+                performanceRecorderOption = PerformanceRecorder.CaptureMode.valueOf(
+                        SettingFiles.read("base.performanceRecorderOption", performanceRecorderOption.name()));
+            } catch (IllegalArgumentException ignored) { }
+            dumpPerformanceDataFileName = SettingFiles.read("base.dumpPerformanceDataFileName", dumpPerformanceDataFileName);
+            if ("".equals(dumpPerformanceDataFileName)) dumpPerformanceDataFileName = null;
+        }
+
+        private void saveValues() {
+            SettingFiles.write("base.consoleUse", Boolean.toString(consoleUse));
+            SettingFiles.write("base.renderingOption", renderingOption.name());
+            SettingFiles.write("base.waitMode", waitMode.name());
+            SettingFiles.write("base.performanceRecorderOption", performanceRecorderOption.name());
+            SettingFiles.write("base.dumpPerformanceDataFileName", dumpPerformanceDataFileName);
+            SettingFiles.write("base.closeWindowWithKillVM", Boolean.toString(closeWindowWithKillVM));
+            SettingFiles.write("base.crtJitterEnabled", Boolean.toString(crtJitterEnabled));
+            SettingFiles.write("base.fullScreen", Boolean.toString(fullScreen));
+            SettingFiles.write("base.changeResolution", Boolean.toString(changeResolution));
+            SettingFiles.write("base.targetResWidth", Integer.toString(targetResWidth));
+            SettingFiles.write("base.targetResHeight", Integer.toString(targetResHeight));
+            SettingFiles.write("base.targetBitDepth", Integer.toString(targetBitDepth));
+            SettingFiles.write("base.targetRefreshRate", Integer.toString(targetRefreshRate));
+            SettingFiles.write("base.virtualScreenWidth", Integer.toString(virtualScreenWidth));
+            SettingFiles.write("base.virtualScreenHeight", Integer.toString(virtualScreenHeight));
+        }
+
+        private static boolean savedBoolean(String name, boolean fallback) {
+            String value = SettingFiles.read(name, Boolean.toString(fallback));
+            return "true".equalsIgnoreCase(value) ? true : "false".equalsIgnoreCase(value) ? false : fallback;
+        }
+    }
+
+    /** Stores one setting in each properties file under the current project directory. */
+    protected static final class SettingFiles {
+        public static String read(String name, String fallback) {
+            return EngineSettings.read(Core.get().getSettingsProjectName(), name, fallback);
+        }
+
+        public static void write(String name, String value) {
+            EngineSettings.write(Core.get().getSettingsProjectName(), name, value);
         }
     }
 
@@ -300,19 +485,58 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public void windowSetup() {
         frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
-        frame.setResizable(true);
+        frame.setResizable(!fullScreen);
+
+        if (fullScreen) {
+            frame.setUndecorated(true);
+        }
 
         this.setPreferredSize(new Dimension(Core.get().initWindowWidth, Core.get().getInitWindowHeight()));
         setFocusable(true);
         setIgnoreRepaint(true);
 
-        viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling());
-
         frame.add(this);
-        frame.pack();
-        frame.setVisible(true);
-        this.requestFocus();
 
+        if (fullScreen) {
+            GraphicsEnvironment env = GraphicsEnvironment.getLocalGraphicsEnvironment();
+            graphicsDevice = env.getDefaultScreenDevice();
+
+            if (graphicsDevice.isFullScreenSupported()) {
+                frame.pack();
+                frame.setVisible(true); // Required before binding FSEM window on some platforms
+
+                graphicsDevice.setFullScreenWindow(frame);
+                originalDisplayMode = graphicsDevice.getDisplayMode();
+
+                // When forced resolution change is requested
+                if (changeResolution && targetResWidth > 0 && targetResHeight > 0) {
+                    if (graphicsDevice.isDisplayChangeSupported()) {
+                        DisplayMode bestMode = findBestDisplayMode(graphicsDevice, targetResWidth, targetResHeight, targetBitDepth, targetRefreshRate);
+                        if (bestMode != null) {
+                            try {
+                                graphicsDevice.setDisplayMode(bestMode);
+                            } catch (Exception ex) {
+                                System.err.println("Failed to switch display resolution: " + ex.getMessage());
+                            }
+                        } else {
+                            System.err.println("Unsupported display mode: " + targetResWidth + "x" + targetResHeight);
+                        }
+                    } else {
+                        System.err.println("Display resolution change is not supported in the current environment.");
+                    }
+                }
+            } else {
+                System.err.println("FSEM (Full-Screen Exclusive Mode) is not supported. Falling back to windowed mode.");
+                frame.setUndecorated(false);
+                frame.pack();
+                frame.setVisible(true);
+            }
+        } else {
+            frame.pack();
+            frame.setVisible(true);
+        }
+
+        this.requestFocus();
         setBackground(Color.BLACK);
         viewMetrics.calculateViewMetrics();
 
@@ -364,6 +588,27 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         });
     }
 
+
+    private DisplayMode findBestDisplayMode(GraphicsDevice device, int width, int height, int bitDepth, int refreshRate) {
+        DisplayMode[] modes = device.getDisplayModes();
+        DisplayMode candidate = null;
+
+        for (DisplayMode mode : modes) {
+            if (mode.getWidth() == width && mode.getHeight() == height) {
+                boolean bitMatch = (bitDepth == DisplayMode.BIT_DEPTH_MULTI || mode.getBitDepth() == DisplayMode.BIT_DEPTH_MULTI || mode.getBitDepth() == bitDepth);
+                boolean rateMatch = (refreshRate == DisplayMode.REFRESH_RATE_UNKNOWN || mode.getRefreshRate() == DisplayMode.REFRESH_RATE_UNKNOWN || mode.getRefreshRate() == refreshRate);
+
+                if (bitMatch && rateMatch) {
+                    return mode;
+                }
+                if (candidate == null && bitMatch) {
+                    candidate = mode;
+                }
+            }
+        }
+        return candidate;
+    }
+
     private void startAsyncLoading() {
         loadTasks.clear();
 
@@ -407,10 +652,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             io.load.loadEnd = true;
         }));
 
-        if (currentScene != null) {
-            loadTasks.add(new LoadTask("Initializing Scene: " + currentScene.name, () -> {
-                currentScene.base = this;
-                currentScene.init();
+        Scene initialScene = baseInit.initScene;
+        if (initialScene != null) {
+            loadTasks.add(new LoadTask("Initializing Scene: " + initialScene.name, () -> {
+                initialScene.base = this;
+                initialScene.init();
             }));
         }
 
@@ -420,6 +666,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             for (int i = 0; i < total; i++) {
                 LoadTask task = loadTasks.get(i);
+                System.out.println(task.description);
                 currentLoadingMessage = task.getDescription();
                 loadingProgress = (float) i / total;
 
@@ -427,7 +674,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     task.getAction().execute();
                 } catch (Throwable t) {
                     t.printStackTrace();
-                    ErrorBoxManager.addError(
+                    errorBoxManager.addError(
                             "Load Failed: " + t.getClass().getSimpleName(),
                             task.getDescription() + " (" + (t.getMessage() != null ? t.getMessage() : "null") + ")"
                     );
@@ -441,13 +688,17 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     public void launch() {
+        if (!builderInitialized) {
+            System.err.println("Engine launch refused: call setBuilder(...) before launch().");
+            return;
+        }
         windowSetup();
         init(baseInit);
         if (Core.get().loadingScreenTexture != null) {
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "logo", Core.get().loadingScreenTexture, null);
         } else {
-            ErrorBoxManager.addError("Custom Loading Screen Load Fail", "instead to default screen.");
-            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "logo", InternalUtils.getEngineResourceStream("CCE.png"), null);
+            //ErrorBoxManager.addError("Custom Loading Screen Load Fail", "instead to default screen.");
+            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
         }
 
         threadLaunch();
@@ -460,6 +711,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         running.set(true);
         logicThread = new Thread(() -> {
             long lastTime = System.nanoTime();
+            long nextTick = lastTime;
             final double targetFps = 60.0;
             final long nsPerTick = (long) (1000000000.0 / targetFps);
 
@@ -469,57 +721,19 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 lastTime = now;
 
                 try {
-                    if (!isChangeScene.get()) {
+                    if (initLoadEnd.get() && !isSceneLoading.get()) {
                         long frameStartNanos = System.nanoTime();
                         update(deltaTime);
                         if (recorder != null) recorder.update();
                         recordCpuPresentedFrame(System.nanoTime() - frameStartNanos);
                     }
-                    if (isChangeScene.get() && pendingScene != null) {
-                        if (currentScene != null) {
-                            try {
-                                Method method = currentScene.getClass().getDeclaredMethod("dispose");
-                                method.setAccessible(true);
-                                method.invoke(currentScene);
-                            } catch (Exception e) {
-                                e.printStackTrace();
-                            }
-                        }
-
-                        currentScene = pendingScene;
-                        pendingScene = null;
-
-                        new Thread(() -> {
-                            try {
-                                assetManager.clearGarbage();
-                                currentScene.init();
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            } finally {
-                                System.gc();
-                                isChangeScene.set(false);
-                            }
-                        }).start();
-                    }
                 } catch (Throwable t) {
                     t.printStackTrace();
                 }
 
-                long timeTaken = System.nanoTime() - now;
-                long timeLeftNs = nsPerTick - timeTaken;
-
-                if (timeLeftNs > 2_000_000) {
-                    try {
-                        Thread.sleep((timeLeftNs - 2_000_000) / 1_000_000);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        running.set(false);
-                    }
-                }
-
-                while (System.nanoTime() - now < nsPerTick) {
-                    Thread.yield();
-                }
+                nextTick += nsPerTick;
+                if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
+                waitForNextTick(nextTick);
             }
         });
 
@@ -531,6 +745,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         running.set(true);
         renderThread = new Thread(() -> {
             long lastTime = System.nanoTime();
+            long nextTick = lastTime;
             final double targetFps = 60.0;
             final long nsPerTick = (long) (1000000000.0 / targetFps);
 
@@ -539,26 +754,43 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 lastTime = now;
 
                 try {
+                    if (isChangeScene.compareAndSet(true, false)) {
+                        Scene nextScene = this.pendingScene;
+                        this.pendingScene = null;
+
+                        if (nextScene != null) {
+                            isSceneLoading.set(true);
+
+                            new Thread(() -> {
+                                try {
+                                    nextScene.init();
+
+                                    if (currentScene != null) {
+                                        Method method = currentScene.getClass().getDeclaredMethod("dispose");
+                                        method.setAccessible(true);
+                                        method.invoke(currentScene);
+                                    }
+                                    assetManager.clearGarbage();
+
+                                    currentScene = nextScene;
+                                } catch (Throwable t) {
+                                    t.printStackTrace();
+                                    System.err.println("Asset loading failed! Aborting engine.");
+                                    System.exit(1);
+                                } finally {
+                                    isSceneLoading.set(false);
+                                }
+                            }, "Scene-Loader").start();
+                        }
+                    }
                     renderLoop();
                 } catch (Throwable t) {
                     t.printStackTrace();
                 }
 
-                long timeTaken = System.nanoTime() - now;
-                long timeLeftNs = nsPerTick - timeTaken;
-
-                if (timeLeftNs > 2_000_000) {
-                    try {
-                        Thread.sleep((timeLeftNs - 2_000_000) / 1_000_000);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        running.set(false);
-                    }
-                }
-
-                while (System.nanoTime() - now < nsPerTick) {
-                    Thread.yield();
-                }
+                nextTick += nsPerTick;
+                if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
+                waitForNextTick(nextTick);
             }
         });
 
@@ -566,18 +798,51 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         renderThread.start();
     }
 
+    private void waitForNextTick(long deadlineNanos) {
+        try {
+            long remaining = deadlineNanos - System.nanoTime();
+            if (waitMode == WaitMode.BUSY_WAIT) {
+                if (remaining > 2_000_000) {
+                    Thread.sleep((remaining - 2_000_000) / 1_000_000);
+                }
+                while (running.get() && deadlineNanos - System.nanoTime() > 0) {
+                    Thread.yield();
+                }
+            } else if (waitMode == WaitMode.OS_SLEEP) {
+                while (running.get() && remaining > 0) {
+                    Thread.sleep(remaining / 1_000_000, (int) (remaining % 1_000_000));
+                    remaining = deadlineNanos - System.nanoTime();
+                }
+            } else {
+                if (remaining > 3_000_000) {
+                    Thread.sleep((remaining - 3_000_000) / 1_000_000);
+                }
+                while (running.get() && (remaining = deadlineNanos - System.nanoTime()) > 1_000_000) {
+                    LockSupport.parkNanos(remaining - 1_000_000);
+                    if (Thread.interrupted()) throw new InterruptedException();
+                }
+                while (running.get() && deadlineNanos - System.nanoTime() > 0) {
+                    Thread.onSpinWait();
+                }
+            }
+        } catch (InterruptedException e) {
+            //Thread.currentThread().interrupt();
+            running.set(false);
+        }
+    }
+
     private void precomputeCrtMath() {
         if (crtPrecomputed) return;
 
         for (int i = 0; i < CRT_SLICES; i++) {
-            p1_sx1[i] = i * 1920 / CRT_SLICES;
-            p1_sx2[i] = (i + 1) * 1920 / CRT_SLICES;
+            p1_sx1[i] = i * WINDOW_WIDTH / CRT_SLICES;
+            p1_sx2[i] = (i + 1) * WINDOW_WIDTH / CRT_SLICES;
 
             float nx = ((i + 0.5f) / CRT_SLICES - 0.5f) * 2.0f;
-            float yMargin = 1080 * 0.5f * (nx * nx * CURVE_Y);
+            float yMargin = WINDOW_HEIGHT * 0.5f * (nx * nx * CURVE_Y);
 
             p1_dy1[i] = (int) Math.round(yMargin);
-            p1_dy2[i] = (int) Math.round(1080 - yMargin);
+            p1_dy2[i] = (int) Math.round(WINDOW_HEIGHT - yMargin);
         }
 
         for (int i = 0; i < CRT_SLICES; i++) {
@@ -650,6 +915,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     private void renderLoop() {
+        if (Thread.interrupted() || !running.get()) return;
         if (System.nanoTime() < renderPausedUntilNanos) return;
 
         BufferStrategy strategy = bufferStrategy;
@@ -659,20 +925,22 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         int currentHeight = getHeight();
         if (currentWidth <= 0 || currentHeight <= 0) return;
 
+        // Base.java - renderLoop() 내 CRT 렌더링 블록
+
         if (renderingOption != null && renderingOption.name().equals("CRT")) {
             GraphicsConfiguration gc = getGraphicsConfiguration();
 
             if (vramBuffer == null ||
-                    vramBuffer.getWidth() != 1920 ||
-                    vramBuffer.getHeight() != 1080 ||
+                    vramBuffer.getWidth() != WINDOW_WIDTH ||
+                    vramBuffer.getHeight() != WINDOW_HEIGHT ||
                     vramBuffer.validate(gc) == VolatileImage.IMAGE_INCOMPATIBLE) {
-                vramBuffer = gc.createCompatibleVolatileImage(1920, 1080, Transparency.OPAQUE);
+                vramBuffer = gc.createCompatibleVolatileImage(WINDOW_WIDTH, WINDOW_HEIGHT, Transparency.OPAQUE);
             }
             if (vramPass1 == null ||
-                    vramPass1.getWidth() != 1920 ||
-                    vramPass1.getHeight() != 1080 ||
+                    vramPass1.getWidth() != WINDOW_WIDTH ||
+                    vramPass1.getHeight() != WINDOW_HEIGHT ||
                     vramPass1.validate(gc) == VolatileImage.IMAGE_INCOMPATIBLE) {
-                vramPass1 = gc.createCompatibleVolatileImage(1920, 1080, Transparency.OPAQUE);
+                vramPass1 = gc.createCompatibleVolatileImage(WINDOW_WIDTH, WINDOW_HEIGHT, Transparency.OPAQUE);
             }
 
             precomputeCrtMath();
@@ -687,37 +955,44 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             boolean loadingComplete = initLoadEnd.get();
             long frameStartNanos = System.nanoTime();
 
+            // 1. Pass 0 (Base Scene -> vramBuffer)
             do {
                 if (vramBuffer.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D vg = vramBuffer.createGraphics();
                 try {
                     vg.setColor(Color.BLACK);
-                    vg.fillRect(0, 0, 1920, 1080);
+                    vg.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
                     drawCurrentFrame(vg, loadingComplete);
                 } finally {
                     vg.dispose();
                 }
-            } while (vramBuffer.contentsLost());
+            } while (running.get() && vramBuffer.contentsLost());
 
+            if (!running.get()) return;
+
+            // 2. Pass 1 (Horizontal Curvature -> vramPass1)
             do {
                 if (vramPass1.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D p1G = vramPass1.createGraphics();
                 try {
                     p1G.setColor(Color.BLACK);
-                    p1G.fillRect(0, 0, 1920, 1080);
+                    p1G.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
                     p1G.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
                     for (int i = 0; i < CRT_SLICES; i++) {
                         p1G.drawImage(vramBuffer,
                                 p1_sx1[i], p1_dy1[i], p1_sx2[i], p1_dy2[i],
-                                p1_sx1[i], 0, p1_sx2[i], 1080,
+                                p1_sx1[i], 0, p1_sx2[i], WINDOW_HEIGHT,
                                 null);
                     }
                 } finally {
                     p1G.dispose();
                 }
-            } while (vramPass1.contentsLost());
+            } while (running.get() && vramPass1.contentsLost());
 
-            do {
+            if (!running.get()) return;
+
+            // 3. Final Pass (Vertical Curvature + Shaders -> BufferStrategy Canvas)
+            try {
                 do {
                     Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
                     try {
@@ -727,15 +1002,15 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
                         int jitterX = 0;
                         if (crtJitterEnabled && Math.random() < 0.15) {
-                            jitterX = (int)(Math.random() * 3) - 1;
+                            jitterX = (int) (Math.random() * 3) - 1;
                         }
                         int finalDrawX = drawX + jitterX;
                         int prevScreenY2 = drawY;
                         for (int i = 0; i < CRT_SLICES; i++) {
-                            int sy1 = (int)(p2_sy1[i] * 1080);
-                            int sy2 = (int)(p2_sy2[i] * 1080);
+                            int sy1 = (int) (p2_sy1[i] * WINDOW_HEIGHT);
+                            int sy2 = (int) (p2_sy2[i] * WINDOW_HEIGHT);
 
-                            int xMargin = (int)(drawW * p2_dxMargin[i]);
+                            int xMargin = (int) (drawW * p2_dxMargin[i]);
                             int dx1 = finalDrawX + xMargin;
                             int dx2 = finalDrawX + drawW - xMargin;
 
@@ -743,7 +1018,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             int screenY2 = drawY + (int) Math.round(p2_sy2[i] * drawH);
                             prevScreenY2 = screenY2;
 
-                            d2.drawImage(vramPass1, dx1, screenY1, dx2, screenY2, 0, sy1, 1920, sy2, null);
+                            d2.drawImage(vramPass1, dx1, screenY1, dx2, screenY2, 0, sy1, WINDOW_WIDTH, sy2, null);
                         }
 
                         if (crtOverlay != null) {
@@ -759,9 +1034,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     } finally {
                         d2.dispose();
                     }
-                } while (strategy.contentsRestored());
-                strategy.show();
-            } while (strategy.contentsLost());
+                } while (running.get() && strategy.contentsRestored());
+
+                if (!strategy.contentsLost()) {
+                    strategy.show();
+                }
+            } catch (IllegalStateException e) {
+                // BufferStrategy가 해제되었거나 윈도우가 파괴 중일 때 조용히 탈출
+            }
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
             return;
@@ -829,7 +1109,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     d2.translate(viewMetrics.getCurrentXOffset(), viewMetrics.getCurrentYOffset());
                     d2.scale(viewMetrics.getCurrentScale(), viewMetrics.getCurrentScale());
 
-                    if (!initLoadEnd.get() || isChangeScene.get()) {
+                    if (!initLoadEnd.get() || isSceneLoading.get()) {
                         renderLoadingScreen(d2);
                     } else {
                         render(d2);
@@ -894,7 +1174,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 }
             }
         } else {
-            if (!initLoadEnd.get() || isChangeScene.get()) {
+            if (!initLoadEnd.get() || isSceneLoading.get()) {
                 renderLoadingScreen(d2);
             } else {
                 render(d2);
@@ -969,14 +1249,19 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public void setConsole(ConsoleInit consoleInit) {}
     public void experimentalRendering(Renderer r) {}
 
-    public void changeScene(Scene newScene) {
+    public synchronized boolean changeScene(Scene newScene) {
         if (newScene == null) {
             System.err.println("new scene is null!");
-            return;
+            return false;
         }
+        if (isSceneLoading.get() || isChangeScene.get()) {
+            return false;
+        }
+
+        newScene.base = this;
         this.pendingScene = newScene;
-        this.pendingScene.base = this;
-        this.isChangeScene.set(true);
+
+        return this.isChangeScene.compareAndSet(false, true);
     }
 
     @Override public final int getComponentWidth() { return this.getWidth(); }
@@ -1007,54 +1292,76 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public final void save() { io.save.save(); }
 
     public void exit(boolean b) {
-        if (b) {
-            exit();
-            System.exit(0);
-        } else {
-            exit();
+        if (!isExiting.compareAndSet(false, true)) {
+            return;
         }
-    }
-
-    public void exit() {
-        save();
-        operatorManager.exitOperatorPack.launch();
 
         running.set(false);
-        if (logicThread != null) {
+
+        new Thread(() -> {
             try {
-                logicThread.join(1000);
+                if (logicThread != null) logicThread.join(2000);
+                if (renderThread != null) renderThread.join(2000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            if (renderThread != null) {
-                try {
-                    renderThread.join(1000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
+
+            boolean logicStopped = (logicThread == null || !logicThread.isAlive());
+            if (!logicStopped) {
+                logicThread.interrupt();
             }
-        }
+            if (renderThread != null && renderThread.isAlive()) {
+                renderThread.interrupt();
+            }
 
-        BufferStrategy strategy = bufferStrategy;
-        bufferStrategy = null;
-        if (strategy != null) {
-            strategy.dispose();
-        }
+            if (logicStopped) {
+                save();
+                operatorManager.exitOperatorPack.launch();
+            } else {
+                System.err.println("[Engine] Logic thread failed to terminate cleanly within timeout. Skipping save to prevent corruption.");
+            }
 
-        if (frame != null) {
-            frame.setVisible(false);
-            frame.dispose();
-        }
+            SwingUtilities.invokeLater(() -> {
+                BufferStrategy strategy = bufferStrategy;
+                bufferStrategy = null;
+                if (strategy != null) {
+                    strategy.dispose();
+                }
+
+                if (graphicsDevice != null) {
+                    try {
+                        if (originalDisplayMode != null && graphicsDevice.isDisplayChangeSupported()) {
+                            graphicsDevice.setDisplayMode(originalDisplayMode);
+                        }
+                    } catch (Exception ignored) {
+                    } finally {
+                        graphicsDevice.setFullScreenWindow(null);
+                    }
+                }
+
+                if (frame != null) {
+                    frame.setVisible(false);
+                    frame.dispose();
+                }
+                if (b) {
+                    System.exit(0);
+                }
+            });
+        }, "Shutdown-Thread").start();
+    }
+
+    public void exit() {
+        exit(false);
     }
 
     private void renderLoadingScreen(Graphics g) {
-        g.drawImage(logo.getVolatileImage(), 0, 0, 1920, 1080, null);
+        g.drawImage(logo.getVolatileImage(), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, null);
         g.setFont(loadingMessageFont);
         g.setColor(Color.black);
         String displayMsg = String.format("%s (%.0f%%)", currentLoadingMessage, loadingProgress * 100);
         RU.drawStringCenter(g, displayMsg, 960, 850);
         g.setColor(Color.black);
-        ErrorBoxManager.render(g);
+        errorBoxManager.render(g);
     }
 
     private void addDrawCall(int x, int y, Call call) {
@@ -1086,7 +1393,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         };
     }
 
-    public static class ErrorBoxManager {
+    public class ErrorBoxManager {
         private static final int MAX_BOXES = 5;
         private static final long DURATION_NANOS = 5_000_000_000L;
         private static final CopyOnWriteArrayList<ErrorBox> boxes = new CopyOnWriteArrayList<>();
@@ -1107,14 +1414,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             }
         }
 
-        public static void addError(String title, String message) {
+        public void addError(String title, String message) {
             if (boxes.size() >= MAX_BOXES) {
                 boxes.remove(0);
             }
             boxes.add(new ErrorBox(title, message));
         }
 
-        public static void render(Graphics g) {
+        public void render(Graphics g) {
             if (boxes.isEmpty()) return;
 
             long now = System.nanoTime();
@@ -1123,8 +1430,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             int boxWidth = 360;
             int boxHeight = 60;
             int margin = 10;
-            int startX = 1920 - boxWidth - 20;
-            int startY = 1080 - boxHeight - 20;
+            int startX = WINDOW_WIDTH - boxWidth - 20;
+            int startY = WINDOW_HEIGHT - boxHeight - 20;
 
             Font titleFont = new Font(Font.SANS_SERIF, Font.BOLD, 14);
             Font descFont = new Font(Font.SANS_SERIF, Font.PLAIN, 12);
@@ -1147,5 +1454,16 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 g.drawString(box.message, startX + 10, y + 45);
             }
         }
+    }
+
+    public void addLog(String str) {
+        System.out.println(str);
+        console.addLog(Console.LogType.SYSTEM,str);
+    }
+
+
+    public void addErrorLog(String str) {
+        System.out.println(str);
+        console.addLog(Console.LogType.SYSTEM ,str);
     }
 }

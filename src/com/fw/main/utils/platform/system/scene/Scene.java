@@ -17,12 +17,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 public final class Scene {
-    AtomicBoolean loaded = new AtomicBoolean(false);
     ArrayList<Sfx> soundAssetLives = new ArrayList<>();
     ArrayList<Bgm> musicAssetLives = new ArrayList<>();
     Map<Integer, Atlas> atlasMap = new ConcurrentHashMap<>();
     @Internal
-    public Base base;
+    public volatile Base base;
     public final String name;
     final SceneAssetRegister assetRegister;
     SceneInit sceneInit = new SceneInit(this);
@@ -112,7 +111,7 @@ public final class Scene {
     }
 
     //어쩔수 없이 Base에서 리플렉션
-    private void dispose() {
+    private synchronized void dispose() {
         for (Sfx s : soundAssetLives) {
             s.getSoundAsset().stop();
             s.getSoundAsset().free();
