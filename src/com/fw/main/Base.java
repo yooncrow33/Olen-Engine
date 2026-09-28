@@ -154,6 +154,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     ErrorBoxManager errorBoxManager = new ErrorBoxManager();
     Console console = new Console(this);
     private Texture logo;
+    private boolean useEngineCursor = false;
+
+    private Cursor engineHardwareCursor;
 
     final Font loadingMessageFont = new Font(Font.MONOSPACED, Font.BOLD, 48);
 
@@ -232,6 +235,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.targetRefreshRate = builder.targetRefreshRate;
         this.WINDOW_WIDTH = builder.virtualScreenWidth;
         this.WINDOW_HEIGHT = builder.virtualScreenHeight;
+        this.useEngineCursor = builder.useEngineCursor;
+
         viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling(),WINDOW_WIDTH,WINDOW_HEIGHT);
 
         sysLoadStack.add(() -> {
@@ -287,6 +292,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         String title = "null";
         int virtualScreenWidth = 1920;
         int virtualScreenHeight = 1080;
+        boolean useEngineCursor = false;
 
         // Fullscreen and resolution configuration fields
         boolean fullScreen = false;
@@ -372,6 +378,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
+        public Builder setUseEngineCursor(boolean useEngineCursor) {
+            this.useEngineCursor = useEngineCursor;
+            return this;
+        }
+
         /** Sets detailed display parameters on entering full screen (width x height x bit depth x refresh rate) */
         public Builder setDisplayResolution(int width, int height, int bitDepth, int refreshRate) {
             this.changeResolution = true;
@@ -396,6 +407,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 targetRefreshRate = Integer.parseInt(SettingFiles.read("base.targetRefreshRate", String.valueOf(targetRefreshRate)));
                 virtualScreenHeight = Integer.parseInt(SettingFiles.read("base.virtualScreenHeight", String.valueOf(virtualScreenHeight)));
                 virtualScreenWidth = Integer.parseInt(SettingFiles.read("base.virtualScreenWidth", String.valueOf(virtualScreenWidth)));
+                useEngineCursor = savedBoolean("base.useEngineCursor", useEngineCursor);
             } catch (NumberFormatException ignored) {}
 
             try {
@@ -428,6 +440,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             SettingFiles.write("base.targetRefreshRate", Integer.toString(targetRefreshRate));
             SettingFiles.write("base.virtualScreenWidth", Integer.toString(virtualScreenWidth));
             SettingFiles.write("base.virtualScreenHeight", Integer.toString(virtualScreenHeight));
+            SettingFiles.write("base.useEngineCursor", Boolean.toString(useEngineCursor));
         }
 
         private static boolean savedBoolean(String name, boolean fallback) {
@@ -530,6 +543,33 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             frame.setVisible(true);
         }
 
+        if (useEngineCursor) {
+            try (InputStream is = InternalUtils.getEngineResourceStream("EngineCursor.png")) {
+                if (is != null) {
+                    BufferedImage cursorImg = javax.imageio.ImageIO.read(is);
+
+                    int targetWidth = 32;
+                    int targetHeight = 32;
+
+                    Image scaled = cursorImg.getScaledInstance(targetWidth, targetHeight, Image.SCALE_SMOOTH);
+                    BufferedImage resizedCursorImg = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB);
+                    Graphics2D g2d = resizedCursorImg.createGraphics();
+                    g2d.drawImage(scaled, 0, 0, null);
+                    g2d.dispose();
+
+                    engineHardwareCursor = Toolkit.getDefaultToolkit().createCustomCursor(
+                            resizedCursorImg, new Point(0, 0), "EngineHardwareCursor"
+                    );
+                    this.setCursor(engineHardwareCursor);
+                    frame.setCursor(engineHardwareCursor);
+                } else {
+                    System.err.println("[Base] Failed to find EngineCursor.png");
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+
         this.requestFocus();
         setBackground(Color.BLACK);
         viewMetrics.calculateViewMetrics();
@@ -545,8 +585,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } else {
                     viewMetrics.updateVirtualMouse(e.getX(), e.getY());
                 }
+
             }
         });
+
 
         this.addComponentListener(new ComponentAdapter() {
             @Override
@@ -689,10 +731,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         windowSetup();
         init(baseInit);
         if (Core.get().loadingScreenTexture != null) {
-            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "logo", Core.get().loadingScreenTexture, null);
+            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", Core.get().loadingScreenTexture, null);
         } else {
             //ErrorBoxManager.addError("Custom Loading Screen Load Fail", "instead to default screen.");
-            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
+            logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
         }
 
         threadLaunch();

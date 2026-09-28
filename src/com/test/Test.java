@@ -53,6 +53,7 @@ public class Test extends Base {
                 setIntegerKey(1).
                 setStringKey("1").
                 setUseConsole(true).
+                setUseEngineCursor(true).
                 setCloseWindowWithKillVM(false).
                 setPerformanceRecorderOption(PerformanceRecorder.CaptureMode.EVERY_FRAME,"test").
                 setRenderingOption(RenderingOption.LEGACY)
