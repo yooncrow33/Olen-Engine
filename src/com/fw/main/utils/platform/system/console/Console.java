@@ -28,7 +28,7 @@ public class Console {
         /**
          *It's use only internal option.
          */
-        SAFE_RUNTIME("[Safe_Runtime] ");
+                SAFE_RUNTIME("[Safe_Runtime] ");
 
         private final String prefix;
         LogType(String prefix) { this.prefix = prefix; }
@@ -62,7 +62,19 @@ public class Console {
     private static final Color COLOR_WARN_BORDER = new Color(220, 80, 80);
     private static final Color COLOR_WARN_TEXT = new Color(255, 180, 180);
 
+    final int WINDOW_WIDTH;
+    final int WINDOW_HEIGHT;
+
     private boolean isOpen = false;
+    private boolean enable = true;
+
+    // 추가 필드: 자동완성 선택 인덱스 및 상시 화면 디버그 표시 여부
+    private int selectedSuggestionIndex = 0;
+    private boolean showDebugScreen = false;
+
+    public void isNotUse() {
+        enable = false;
+    }
 
     private final List<String> logs = new ArrayList<>();
     private int scrollOffset = 0;
@@ -92,6 +104,9 @@ public class Console {
         });
         this.base = comp;
         this.targetCanvas = comp;
+
+        WINDOW_WIDTH = comp.WINDOW_WIDTH;
+        WINDOW_HEIGHT = comp.WINDOW_HEIGHT;
 
         comp.setFocusable(true);
         initBinding();
@@ -148,10 +163,23 @@ public class Console {
                 whenToken(1).is("exe").whenToken(2).is("testInConsole");
         getAuto().suggestAt(3,"safe_runtimeMessage").whenToken(0).is("sys").
                 whenToken(1).is("exe").whenToken(2).is("testInConsole");
+
+        // sys debug 자동완성 규칙 등록
+        getAuto().suggestAt(1, "debug").whenToken(0).is("sys");
+        getAuto().suggestAt(2, "true").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(2, "false").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(2, "1").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(2, "0").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(3, "screen").whenToken(0).is("sys").whenToken(1).is("debug");
     }
 
     public boolean isOpen() { return isOpen; }
-    public void toggle() { isOpen = !isOpen; text.setFocused(!text.isFocused()); text.clear(); }
+    public void toggle() {
+        isOpen = !isOpen;
+        text.setFocused(!text.isFocused());
+        text.clear();
+        selectedSuggestionIndex = 0;
+    }
 
     public void setMaxLines(int maxLines) {
         this.maxLines = Math.max(1, maxLines);
@@ -166,7 +194,7 @@ public class Console {
     }
 
     public void CMD(List<String> cmd) {
-        if (base.getConsoleCMD()!=null) {
+        if (base.getConsoleCMD() != null) {
             base.getConsoleCMD().CMD(cmd);
         }
     }
@@ -176,7 +204,7 @@ public class Console {
     @Internal
     public void enterAtConsole() {
         String input = text.getInputText().trim();
-        if (input.isEmpty()) {text.clear();return;}
+        if (input.isEmpty()) { text.clear(); return; }
         if (hasConsecutiveSpaces(input)) {
             addLog(LogType.ERROR, "multiple consecutive spaces detected.");
             return;
@@ -187,7 +215,7 @@ public class Console {
         }
 
         List<String> args = parseBuffer(input, false);
-        if (args.isEmpty()) {return;}
+        if (args.isEmpty()) { return; }
 
         if (args.get(0) != null && args.get(0).equals("sys")) {
             internalCMD(args);
@@ -198,13 +226,12 @@ public class Console {
         scrollOffset = 0;
         CMD(args);
         text.clear();
+        selectedSuggestionIndex = 0;
     }
 
     @Internal
     public boolean hasConsecutiveSpaces(String sb) {
-        if (sb == null) {
-            return false;
-        }
+        if (sb == null) return false;
         boolean inQuotes = false;
         for (int i = 0; i < sb.length() - 1; i++) {
             char c = sb.charAt(i);
@@ -220,23 +247,14 @@ public class Console {
 
     @Internal
     public boolean hasSyntaxError(String sb) {
-        if (sb == null) {
-            return false;
-        }
-
+        if (sb == null) return false;
         boolean inQuotes = false;
         for (int i = 0; i < sb.length(); i++) {
             if (sb.charAt(i) == '"') {
-                inQuotes = !inQuotes; // 따옴표 토글
+                inQuotes = !inQuotes;
             }
         }
-
-        // 루프가 끝났는데 inQuotes가 true면 따옴표가 닫히지 않은 것
-        if (inQuotes) {
-            return true;
-        }
-
-        return false;
+        return inQuotes;
     }
 
     @Internal
@@ -280,173 +298,206 @@ public class Console {
 
     @Internal
     public void render(Graphics g) {
-        if (!isOpen || g == null) return;
+        if (g == null || (!isOpen && !showDebugScreen)) return;
         Graphics2D g2 = (Graphics2D) g;
 
-        g2.setColor(COLOR_BG);
-        g2.fillRect(0, 0, 1920, 340);
+        final int vW = (base != null && base.WINDOW_WIDTH > 0) ? base.WINDOW_WIDTH : 1920;
+        final int vH = (base != null && base.WINDOW_HEIGHT > 0) ? base.WINDOW_HEIGHT : 1080;
+        final float resScale = Math.min(1.0f, Math.max(0.6f, (float) vH / 1080f));
+        Font fontWarning = FONT_WARNING.deriveFont(12f * resScale);
 
-        g2.setColor(COLOR_BORDER);
-        g2.setStroke(STROKE_BORDER);
-        g2.drawLine(0, 340, 1920, 340);
+        if (isOpen) {
+            final int minConsoleH = (int) (220 * resScale);
+            final int consoleH = Math.min(vH - 20, Math.max(minConsoleH, (int) (vH * 0.35f)));
 
-        int lineHeight = 25;
-        int startY = 40;
-        int totalLogs = logs.size();
-        int endIndex = totalLogs - scrollOffset;
-        int startIndex = Math.max(0, endIndex - maxLines);
-        int lineCount = 0;
+            Font fontLog = FONT_LOG.deriveFont(16f * resScale);
+            Font fontLogIndex = FONT_LOG_INDEX.deriveFont(12f * resScale);
+            Font fontPrompt = FONT_PROMPT.deriveFont(18f * resScale);
+            Font fontSuggestTop = FONT_SUGGEST_TOP.deriveFont(14f * resScale);
+            Font fontSuggestSub = FONT_SUGGEST_SUB.deriveFont(14f * resScale);
 
-        for (int i = startIndex; i < endIndex; i++) {
-            String line = logs.get(i);
+            // 콘솔 배경 및 하단 테두리
+            g2.setColor(COLOR_BG);
+            g2.fillRect(0, 0, vW, consoleH);
 
-            g2.setFont(FONT_LOG);
-            if (line.contains("Error")) g2.setColor(COLOR_LOG_ERROR);
-            if (line.contains("[Safe_Runtime]")) g2.setColor(COLOR_LOG_SAFE_RUNTIME);
-            else if (line.contains("root:")) g2.setColor(COLOR_LOG_ROOT);
-            else if (line.contains("[System]")) g2.setColor(COLOR_LOG_SYS);
-            else g2.setColor(COLOR_LOG_DEFAULT);
+            g2.setColor(COLOR_BORDER);
+            g2.setStroke(STROKE_BORDER);
+            g2.drawLine(0, consoleH, vW, consoleH);
 
-            g2.drawString(line, 30, startY + (lineCount * lineHeight));
+            // 프롬프트 및 로그 위치 계산
+            final int promptBottomMargin = (int) (22 * resScale);
+            final int promptY = consoleH - promptBottomMargin;
+            final int startY = (int) (32 * resScale);
 
-            int currentY = startY + (lineCount * lineHeight);
+            g2.setFont(fontLog);
+            FontMetrics fmLog = g2.getFontMetrics();
+            final int lineHeight = Math.max(fmLog.getHeight(), (int) (20 * resScale));
 
-            g2.setFont(FONT_LOG_INDEX);
+            final int availableHeight = (promptY - (int) (25 * resScale)) - startY;
+            this.maxLines = Math.max(1, availableHeight / lineHeight);
+
+            int totalLogs = logs.size();
+            int endIndex = totalLogs - scrollOffset;
+            int startIndex = Math.max(0, endIndex - maxLines);
+            int lineCount = 0;
+
+            for (int i = startIndex; i < endIndex; i++) {
+                String line = logs.get(i);
+                int currentY = startY + (lineCount * lineHeight);
+
+                g2.setFont(fontLog);
+                if (line.contains("Error")) g2.setColor(COLOR_LOG_ERROR);
+                else if (line.contains("[Safe_Runtime]")) g2.setColor(COLOR_LOG_SAFE_RUNTIME);
+                else if (line.contains("root:")) g2.setColor(COLOR_LOG_ROOT);
+                else if (line.contains("[System]")) g2.setColor(COLOR_LOG_SYS);
+                else g2.setColor(COLOR_LOG_DEFAULT);
+
+                g2.drawString(line, (int) (25 * resScale), currentY);
+
+                g2.setFont(fontLogIndex);
+                g2.setColor(COLOR_GRAY_TEXT);
+                g2.drawString(String.format("#%d", i), vW - (int) (140 * resScale), currentY);
+
+                lineCount++;
+            }
+
+            g2.setFont(fontLogIndex);
             g2.setColor(COLOR_GRAY_TEXT);
-            g2.drawString(String.format("#%d", i), 1750, currentY);
+            g2.drawString(String.format("Lines: %d/%d", endIndex, totalLogs), vW - (int) (110 * resScale), (int) (22 * resScale));
 
-            lineCount++;
-        }
+            // 프롬프트
+            int promptX = (int) (25 * resScale);
+            String promptPrefix = "root@" + Core.get().getProjectName().toLowerCase() + ":~$ ";
+            String currentInput = text.getInputText();
+            String fullPrompt = promptPrefix + currentInput;
 
-        g2.setFont(FONT_LOG_INDEX);
-        g2.setColor(COLOR_GRAY_TEXT);
-        g2.drawString(String.format("Lines: %d/%d", endIndex, totalLogs), 1820, 30);
+            g2.setFont(fontPrompt);
+            g2.setColor(COLOR_BORDER);
+            RU.drawStringWithCursor(g2, promptPrefix, text, "", promptX, promptY, 3, RU.CursorPosition.TOP);
 
-        int promptX = 30;
-        int promptY = 310;
+            FontMetrics fmPrompt = g2.getFontMetrics(fontPrompt);
+            int cursorX = promptX + fmPrompt.stringWidth(fullPrompt);
+            int cursorY = promptY;
 
-        String promptPrefix = "root@" + Core.get().getProjectName().toLowerCase() + ":~$ ";
-        String currentInput = text.getInputText();
-        String fullPrompt = promptPrefix + currentInput;
+            String cursor = (System.currentTimeMillis() % 1000 > 300) ? "_" : "";
+            g2.drawString(cursor, cursorX, cursorY);
 
-        g2.setFont(FONT_PROMPT);
-        g2.setColor(COLOR_BORDER);
-        RU.drawStringWithCursor(g2,promptPrefix,text,"",promptX,promptY,3,RU.CursorPosition.TOP);
+            // 자동완성 패널
+            List<String> allCandidates = getAllCandidates();
+            List<String> suggestions = getCurrentSuggestions();
 
-        FontMetrics fmPrompt = g2.getFontMetrics(FONT_PROMPT);
-        int cursorX = promptX + fmPrompt.stringWidth(fullPrompt);
-        int cursorY = promptY;
+            int boxPadding = (int) (6 * resScale);
+            int itemHeight = (int) (18 * resScale);
 
-        String cursor = (System.currentTimeMillis() % 1000 > 300) ? "_" : "";
-        g2.drawString(cursor, cursorX, cursorY);
-
-        List<String> allCandidates = getAllCandidates();
-        List<String> suggestions = getCurrentSuggestions();
-
-        int boxPadding = 8;
-        int itemHeight = 20;
-
-        if (!allCandidates.isEmpty()) {
-            int maxWordWidth = 0;
-            for (String cand : allCandidates) {
-                maxWordWidth = Math.max(maxWordWidth, fmPrompt.stringWidth(cand));
-            }
-            int panelWidth = Math.max(maxWordWidth + (boxPadding * 2), 80);
-            int panelHeight = (allCandidates.size() * itemHeight) + (boxPadding * 2);
-
-            int leftPanelX = cursorX - panelWidth - 10;
-            int leftPanelY = cursorY + 15;
-
-            g2.setColor(COLOR_PANEL_BG);
-            g2.fillRect(leftPanelX, leftPanelY, panelWidth, panelHeight);
-            g2.setColor(COLOR_PANEL_BORDER);
-            g2.drawRect(leftPanelX, leftPanelY, panelWidth, panelHeight);
-
-            g2.setFont(FONT_SUGGEST_SUB);
-            g2.setColor(COLOR_CANDIDATES_TEXT);
-            for (int idx = 0; idx < allCandidates.size(); idx++) {
-                String candidateWord = allCandidates.get(idx);
-                int textY = leftPanelY + boxPadding + (idx + 1) * itemHeight - 4;
-                g2.drawString(candidateWord, leftPanelX + boxPadding, textY);
-            }
-        }
-
-        if (!suggestions.isEmpty()) {
-            int maxWordWidth = 0;
-            for (String sug : suggestions) {
-                maxWordWidth = Math.max(maxWordWidth, fmPrompt.stringWidth(sug));
-            }
-            int panelWidth = maxWordWidth + (boxPadding * 2);
-            int panelHeight = (suggestions.size() * itemHeight) + (boxPadding * 2);
-
-            int rightPanelX = cursorX + 10;
-            int rightPanelY = cursorY + 15;
-
-            g2.setColor(COLOR_PANEL_BG);
-            g2.fillRect(rightPanelX, rightPanelY, panelWidth, panelHeight);
-            g2.setColor(COLOR_PANEL_BORDER);
-            g2.drawRect(rightPanelX, rightPanelY, panelWidth, panelHeight);
-
-            for (int idx = 0; idx < suggestions.size(); idx++) {
-                String suggestionWord = suggestions.get(idx);
-                int textY = rightPanelY + boxPadding + (idx + 1) * itemHeight - 4;
-
-                if (idx == 0) {
-                    g2.setFont(FONT_SUGGEST_TOP);
-                    g2.setColor(COLOR_LOG_ROOT);
-                } else {
-                    g2.setFont(FONT_SUGGEST_SUB);
-                    g2.setColor(COLOR_GRAY_TEXT);
+            // 좌측 전체 후보
+            if (!allCandidates.isEmpty()) {
+                int maxWordWidth = 0;
+                for (String cand : allCandidates) {
+                    maxWordWidth = Math.max(maxWordWidth, fmPrompt.stringWidth(cand));
                 }
-                g2.drawString(suggestionWord, rightPanelX + boxPadding, textY);
-            }
-        }
-        g2.setFont(FONT_WARNING);
-        FontMetrics fmWarn = g2.getFontMetrics(FONT_WARNING);
+                int panelWidth = Math.max(maxWordWidth + (boxPadding * 2), (int) (70 * resScale));
+                int panelHeight = (allCandidates.size() * itemHeight) + (boxPadding * 2);
 
-        int warnBoxHeight = 22;
-        int warnBoxY = cursorY - 30;
+                int leftPanelX = cursorX - panelWidth - (int) (8 * resScale);
+                int leftPanelY = cursorY + (int) (10 * resScale);
 
-        if (hasConsecutiveSpaces(currentInput)) {
-            String msg = "Consecutive spaces detected";
-            int warnWidth = fmWarn.stringWidth(msg) + 12;
-            int warnX = cursorX + 10;
+                g2.setColor(COLOR_PANEL_BG);
+                g2.fillRect(leftPanelX, leftPanelY, panelWidth, panelHeight);
+                g2.setColor(COLOR_PANEL_BORDER);
+                g2.drawRect(leftPanelX, leftPanelY, panelWidth, panelHeight);
 
-            if (warnX + warnWidth > 1900) {
-                warnX = 1900 - warnWidth;
-            }
-
-            g2.setColor(COLOR_WARN_BG);
-            g2.fillRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
-            g2.setColor(COLOR_WARN_BORDER);
-            g2.drawRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
-
-            g2.setColor(COLOR_WARN_TEXT);
-            g2.drawString(msg, warnX + 6, warnBoxY + 15);
-
-            warnBoxY -= (warnBoxHeight + 4);
-        }
-
-        if (hasSyntaxError(currentInput)) {
-            String msg = "Unclosed quotes (\")";
-            int warnWidth = fmWarn.stringWidth(msg) + 12;
-            int warnX = cursorX + 10;
-
-            if (warnX + warnWidth > 1900) {
-                warnX = 1900 - warnWidth;
+                g2.setFont(fontSuggestSub);
+                g2.setColor(COLOR_CANDIDATES_TEXT);
+                for (int idx = 0; idx < allCandidates.size(); idx++) {
+                    String candidateWord = allCandidates.get(idx);
+                    int textY = leftPanelY + boxPadding + (idx + 1) * itemHeight - (int) (3 * resScale);
+                    g2.drawString(candidateWord, leftPanelX + boxPadding, textY);
+                }
             }
 
-            g2.setColor(COLOR_WARN_BG);
-            g2.fillRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
-            g2.setColor(COLOR_WARN_BORDER);
-            g2.drawRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
+            // 우측 매칭 추천 목록 (선택된 인덱스 하이라이트)
+            if (!suggestions.isEmpty()) {
+                if (selectedSuggestionIndex >= suggestions.size() || selectedSuggestionIndex < 0) {
+                    selectedSuggestionIndex = 0;
+                }
 
-            g2.setColor(COLOR_WARN_TEXT);
-            g2.drawString(msg, warnX + 6, warnBoxY + 15);
+                int maxWordWidth = 0;
+                for (String sug : suggestions) {
+                    maxWordWidth = Math.max(maxWordWidth, fmPrompt.stringWidth(sug));
+                }
+                int panelWidth = maxWordWidth + (boxPadding * 2);
+                int panelHeight = (suggestions.size() * itemHeight) + (boxPadding * 2);
+
+                int rightPanelX = cursorX + (int) (8 * resScale);
+                int rightPanelY = cursorY + (int) (10 * resScale);
+
+                g2.setColor(COLOR_PANEL_BG);
+                g2.fillRect(rightPanelX, rightPanelY, panelWidth, panelHeight);
+                g2.setColor(COLOR_PANEL_BORDER);
+                g2.drawRect(rightPanelX, rightPanelY, panelWidth, panelHeight);
+
+                for (int idx = 0; idx < suggestions.size(); idx++) {
+                    String suggestionWord = suggestions.get(idx);
+                    int textY = rightPanelY + boxPadding + (idx + 1) * itemHeight - (int) (3 * resScale);
+
+                    if (idx == selectedSuggestionIndex) {
+                        g2.setFont(fontSuggestTop);
+                        g2.setColor(COLOR_LOG_ROOT);
+                    } else {
+                        g2.setFont(fontSuggestSub);
+                        g2.setColor(COLOR_GRAY_TEXT);
+                    }
+                    g2.drawString(suggestionWord, rightPanelX + boxPadding, textY);
+                }
+            }
+
+            // 경고 메시지
+            FontMetrics fmWarn = g2.getFontMetrics(fontWarning);
+            int warnBoxHeight = (int) (20 * resScale);
+            int warnBoxY = cursorY - (int) (26 * resScale);
+
+            if (hasConsecutiveSpaces(currentInput)) {
+                String msg = "Consecutive spaces detected";
+                int warnWidth = fmWarn.stringWidth(msg) + (int) (10 * resScale);
+                int warnX = cursorX + (int) (10 * resScale);
+
+                if (warnX + warnWidth > vW - 20) {
+                    warnX = vW - 20 - warnWidth;
+                }
+
+                g2.setColor(COLOR_WARN_BG);
+                g2.fillRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
+                g2.setColor(COLOR_WARN_BORDER);
+                g2.drawRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
+
+                g2.setColor(COLOR_WARN_TEXT);
+                g2.drawString(msg, warnX + 5, warnBoxY + (int) (14 * resScale));
+
+                warnBoxY -= (warnBoxHeight + 4);
+            }
+
+            if (hasSyntaxError(currentInput)) {
+                String msg = "Unclosed quotes (\")";
+                int warnWidth = fmWarn.stringWidth(msg) + (int) (10 * resScale);
+                int warnX = cursorX + (int) (10 * resScale);
+
+                if (warnX + warnWidth > vW - 20) {
+                    warnX = vW - 20 - warnWidth;
+                }
+
+                g2.setColor(COLOR_WARN_BG);
+                g2.fillRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
+                g2.setColor(COLOR_WARN_BORDER);
+                g2.drawRect(warnX, warnBoxY, warnWidth, warnBoxHeight);
+
+                g2.setColor(COLOR_WARN_TEXT);
+                g2.drawString(msg, warnX + 5, warnBoxY + (int) (14 * resScale));
+            }
         }
 
+        // 시안색 워크타임라인 디버그 텍스트 (isOpen이거나 showDebugScreen이 켜진 경우 항상 최종 렌더링)
         g.setColor(Color.CYAN);
-        g.setFont(FONT_WARNING);
+        g.setFont(fontWarning);
         g.drawString(String.format(
                 "FPS: %d | frame: %.2f ms | work: %.2f ms | " +
                         "scale: %.6f / requested: %.6f | physical: %.3f (%s%s)",
@@ -458,7 +509,7 @@ public class Console {
                 base.getPhysicalViewScale(),
                 base.isFractionalPhysicalScale() ? "fractional" : "integer",
                 base.isViewScaleSnapped() ? ", snapped" : ""
-        ), 5, 15);
+        ), 5, (int) (14 * resScale));
     }
 
     private static final int CONSOLE_KEY_CODE = KeyEvent.VK_BACK_QUOTE;
@@ -468,14 +519,45 @@ public class Console {
         targetCanvas.addKeyListener(new KeyAdapter() {
             @Override
             public void keyPressed(KeyEvent e) {
+                if (!enable) { return; }
+
                 if (e.getKeyCode() == CONSOLE_KEY_CODE) {
                     toggle();
                     e.consume();
+                    return;
+                }
+
+                if (isOpen) {
+                    switch (e.getKeyCode()) {
+                        case KeyEvent.VK_PAGE_UP -> {
+                            scrollUp(2);
+                            e.consume();
+                        }
+                        case KeyEvent.VK_PAGE_DOWN -> {
+                            scrollDown(2);
+                            e.consume();
+                        }
+                        case KeyEvent.VK_UP -> {
+                            List<String> suggestions = getCurrentSuggestions();
+                            if (!suggestions.isEmpty()) {
+                                selectedSuggestionIndex = (selectedSuggestionIndex - 1 + suggestions.size()) % suggestions.size();
+                                e.consume();
+                            }
+                        }
+                        case KeyEvent.VK_DOWN -> {
+                            List<String> suggestions = getCurrentSuggestions();
+                            if (!suggestions.isEmpty()) {
+                                selectedSuggestionIndex = (selectedSuggestionIndex + 1) % suggestions.size();
+                                e.consume();
+                            }
+                        }
+                    }
                 }
             }
 
             @Override
             public void keyReleased(KeyEvent e) {
+                if (!enable) { return; }
                 if (e.getKeyCode() == CONSOLE_KEY_CODE) {
                     e.consume();
                 }
@@ -483,6 +565,11 @@ public class Console {
         });
     }
 
+    private Boolean parseBoolValue(String val) {
+        if ("true".equalsIgnoreCase(val) || "1".equals(val)) return true;
+        if ("false".equalsIgnoreCase(val) || "0".equals(val)) return false;
+        return null;
+    }
 
     public void internalCMD(List<String> args) {
         if (args == null || args.size() < 2 || !"sys".equals(args.get(0))) {
@@ -490,6 +577,32 @@ public class Console {
         }
 
         switch (args.get(1)) {
+            case "debug" -> {
+                if (args.size() < 4) {
+                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> screen");
+                    return;
+                }
+
+                String valStr;
+                if ("screen".equalsIgnoreCase(args.get(3))) {
+                    valStr = args.get(2);
+                } else if ("screen".equalsIgnoreCase(args.get(2))) {
+                    valStr = args.get(3);
+                } else {
+                    addLog(LogType.ERROR, "target must be 'screen'!");
+                    return;
+                }
+
+                Boolean targetState = parseBoolValue(valStr);
+                if (targetState == null) {
+                    addLog(LogType.ERROR, "invalid boolean! use true, false, 1, or 0.");
+                    return;
+                }
+
+                this.showDebugScreen = targetState;
+                addLog(LogType.SYSTEM, "Debug screen set to: " + showDebugScreen);
+                text.clear();
+            }
             case "up" -> {
                 if (args.size() < 3) {
                     scrollUp(1);
@@ -561,7 +674,7 @@ public class Console {
                 text.setInputText(logs.get(value).substring(17));
             }
             case "gc" -> {
-                base.assetManager.clearGarbage();
+                addLog(LogType.SYSTEM,"It's legacy functions");
                 text.clear();
             }
             case "getInfo" -> {
@@ -743,18 +856,21 @@ public class Console {
         if (currentTokens.isEmpty()) return;
 
         String currentToken = currentTokens.get(currentTokens.size() - 1);
-
         if (currentToken.isEmpty()) return;
 
         List<String> candidates = autoCompleteManager.getCandidates(currentTokens, currentToken);
 
         if (!candidates.isEmpty()) {
-            String topCandidate = candidates.get(0);
+            if (selectedSuggestionIndex >= candidates.size() || selectedSuggestionIndex < 0) {
+                selectedSuggestionIndex = 0;
+            }
 
-            currentTokens.set(currentTokens.size() - 1, topCandidate);
+            String chosenCandidate = candidates.get(selectedSuggestionIndex);
+            currentTokens.set(currentTokens.size() - 1, chosenCandidate);
             String completedInput = String.join(" ", currentTokens) + " ";
 
             text.setInputText(completedInput);
+            selectedSuggestionIndex = 0;
         }
     }
 
