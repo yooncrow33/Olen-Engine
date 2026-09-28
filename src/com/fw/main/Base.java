@@ -9,7 +9,6 @@ import com.fw.internal.sys.base.view.IFrameSize;
 import com.fw.internal.sys.base.view.ViewMetrics;
 import com.fw.internal.utils.InternalUtils;
 import com.fw.main.api.sys.ConsoleCMD;
-import com.fw.main.api.sys.graphics.Call;
 import com.fw.main.utils.graphics.RU;
 import com.fw.main.utils.graphics.RenderingOption;
 import com.fw.main.utils.input.korean.TextModule;
@@ -49,7 +48,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
-    public static String version = "PRE 0.2.0 in dev";
+    public static String version = "PRE 0.2.0";
     public JFrame frame = new JFrame("Olen Engine");
 
     // --- Fullscreen and resolution states ---
@@ -134,14 +133,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             CRT_PULSE_COLORS[i] = new Color(0, 0, 0, i);
         }
     }
-
-    private final ArrayList<Call> drawCalls = new ArrayList<>(1024);
-    private final ArrayList<Integer> drawCallXs = new ArrayList<>(1024);
-    private final ArrayList<Integer> drawCallYs = new ArrayList<>(1024);
-
-    private final ArrayList<Call> renderTargetCalls = new ArrayList<>(1024);
-    private final ArrayList<Integer> renderTargetXs = new ArrayList<>(1024);
-    private final ArrayList<Integer> renderTargetYs = new ArrayList<>(1024);
 
     private TextModule textModule;
     private volatile MouseAtBase mouseAtBase = new MouseAtBase(this);
@@ -1082,13 +1073,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return;
         }
 
-        if (renderingOption.equals(RenderingOption.DEFAULT) || renderingOption.equals(RenderingOption.EXPERIMENTAL)) {
+        if (renderingOption.equals(RenderingOption.DEFAULT)) {
             ViewMetrics.Snapshot metrics = viewMetrics.getSnapshot();
             boolean loadingComplete = initLoadEnd.get();
-            boolean experimentalFrame = loadingComplete && renderingOption.equals(RenderingOption.EXPERIMENTAL);
-            if (experimentalFrame) {
-                prepareExperimentalFrame();
-            }
 
             long frameStartNanos = System.nanoTime();
             try {
@@ -1116,11 +1103,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
                     strategy.show();
                 } while (strategy.contentsLost());
-            } finally {
-                if (experimentalFrame) {
-                    clearExperimentalFrame();
-                }
+            } catch (Exception e) {
+                throw new RuntimeException(e);
             }
+
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
         } else if (renderingOption.equals(RenderingOption.LEGACY)) {
@@ -1173,41 +1159,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         }
     }
 
-    private void prepareExperimentalFrame() {
-        synchronized (drawCalls) {
-            renderTargetCalls.addAll(drawCalls);
-            renderTargetXs.addAll(drawCallXs);
-            renderTargetYs.addAll(drawCallYs);
-
-            drawCalls.clear();
-            drawCallXs.clear();
-            drawCallYs.clear();
-        }
-    }
-
-    private void clearExperimentalFrame() {
-        renderTargetCalls.clear();
-        renderTargetXs.clear();
-        renderTargetYs.clear();
-    }
-
     private void drawCurrentFrame(Graphics2D d2, boolean loadingComplete) {
         if (!loadingComplete) {
             renderLoadingScreen(d2);
-        } else if (renderingOption.equals(RenderingOption.EXPERIMENTAL)) {
-            for (int i = 0; i < renderTargetCalls.size(); i++) {
-                Call call = renderTargetCalls.get(i);
-                int x = renderTargetXs.get(i);
-                int y = renderTargetYs.get(i);
-
-                if (call != null) {
-                    call.updateCache();
-                    VolatileImage buffer = call.getBuffer();
-                    if (buffer != null) {
-                        d2.drawImage(buffer, x, y, null);
-                    }
-                }
-            }
         } else {
             if (!initLoadEnd.get() || isSceneLoading.get()) {
                 renderLoadingScreen(d2);
@@ -1282,7 +1236,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public abstract void render(Graphics2D g);
     public void setMouse(Mouse mouse) {}
     public void setConsole(ConsoleInit consoleInit) {}
-    public void experimentalRendering(Renderer r) {}
 
     public synchronized boolean changeScene(Scene newScene) {
         if (newScene == null) {
@@ -1397,20 +1350,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         RU.drawStringCenter(g, displayMsg, 960, 850);
         g.setColor(Color.black);
         errorBoxManager.render(g);
-    }
-
-    private void addDrawCall(int x, int y, Call call) {
-        synchronized (drawCalls) {
-            drawCalls.add(call);
-            drawCallXs.add(x);
-            drawCallYs.add(y);
-        }
-    }
-
-    public class Renderer {
-        public void addDrawCall(int x, int y, Call call) {
-            Base.this.addDrawCall(x, y, call);
-        }
     }
 
     public GraphicsConfiguration graphicsConfiguration() { return getGraphicsConfiguration(); }
