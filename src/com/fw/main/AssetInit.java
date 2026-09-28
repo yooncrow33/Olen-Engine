@@ -21,7 +21,7 @@ public final class AssetInit {
     final Map<String, BootMusicProxy> musicProxies = new LinkedHashMap<>();
 
     public Texture registerBootTexture(String key, InputStream is) {
-        if (key == null || is == null) throw new IllegalArgumentException("Key and InputStream must not be null.");
+        if (key == null) throw new IllegalArgumentException("Key must not be null.");
         textureAssets.put(key, is);
 
         BootTextureProxy proxy = new BootTextureProxy(base.assetManager, key);

@@ -3,21 +3,24 @@ package com.fw.main.utils.platform.system.asset;
 import com.fw.internal.utils.Internal;
 import com.fw.internal.utils.InternalUtils;
 import com.fw.main.Base;
+import com.fw.main.Core;
 import com.fw.main.Fw;
+import com.fw.main.utils.io.IoUtils;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.MusicAsset;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
 import com.fw.main.utils.platform.system.console.Console;
 
-import javax.sound.sampled.LineUnavailableException;
+import javax.imageio.ImageIO;
+import java.awt.*;
 import java.awt.image.BufferedImage;
+import java.io.IOException;
 import java.io.InputStream;
-import java.net.URL;
 import java.util.*;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.Supplier;
 
 public class AssetManager {
     public enum LoadMode {
@@ -35,7 +38,7 @@ public class AssetManager {
         TEXTURE
     }
 
-    private final Base instance;
+    final Base instance;
     private final Queue<PooledTexture> freePool = new ConcurrentLinkedQueue<>();
     private PooledTexture[] pool;
     private final Map<String, PooledTexture> textureActiveMap = new ConcurrentHashMap<>();
@@ -45,32 +48,17 @@ public class AssetManager {
     private final Map<String, DynamicAssetObject> pendingObjects = new ConcurrentHashMap<>();
     private final Queue<DynamicAssetObject> daoFreePool = new ConcurrentLinkedQueue<>();
     private DynamicAssetObject[] daoPool;
-
-    private final Queue<BufferedImage> garbageQueue = new ConcurrentLinkedQueue<>();
+    final BufferedImage wrongTexture;
 
     public AssetManager(Base baseInstance) {
         this.instance = baseInstance;
         if (!InternalSoundModule.isInitialized()) {
             InternalSoundModule.init();
         }
-    }
-
-    void addGarbageList(BufferedImage bufferedImage) {
-        if (bufferedImage != null) {
-            garbageQueue.add(bufferedImage);
-        }
-    }
-
-    public void clearGarbage() {
-        int count = 0;
-        BufferedImage b;
-        while ((b = garbageQueue.poll()) != null) {
-            b.flush();
-            count++;
-        }
-        if (count > 0 && instance != null) {
-            Fw.Helper.getConsoleToBaseInstance(instance)
-                    .addLog(Console.LogType.SYSTEM, "clear texture garbage count: " + count);
+        try {
+            wrongTexture = ImageIO.read(IoUtils.getGameResourceStream("WrongTexture.png"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -95,7 +83,16 @@ public class AssetManager {
     private PooledTexture getFreeTexture() {
         PooledTexture tex = freePool.poll();
         if (tex == null) {
-            throw new IllegalStateException("Out of texture pool! Increase pool size with mallocTexturePool().");
+            if (Core.get().isSafeRuntime()) {
+                for (int i = 5; i < 50; i++) {
+                    freePool.add(new PooledTexture(this));
+                }
+                Fw.Helper.getConsoleToBaseInstance(instance).addLog(Console.LogType.SAFE_RUNTIME,
+                        "auto allocated TexturePool in AssetManager.");
+                tex = freePool.poll();
+            } else {
+                throw new IllegalStateException("Out of texture pool! Increase pool size with mallocTexturePool().");
+            }
         }
         tex.setInUse(true);
         return tex;
@@ -104,22 +101,22 @@ public class AssetManager {
     private DynamicAssetObject getFreeDao() {
         DynamicAssetObject dao = daoFreePool.poll();
         if (dao == null) {
-            throw new IllegalStateException("Out of DynamicAssetObject pool! Increase pool size with malloc().");
+            if (Core.get().isSafeRuntime()) {
+                for (int i = 5; i < 50; i++) {
+                    daoFreePool.add(new DynamicAssetObject());
+                }
+                Fw.Helper.getConsoleToBaseInstance(instance).addLog(Console.LogType.SAFE_RUNTIME,
+                        "auto allocated DynamicAssetObjectPool in AssetManager.");
+                dao = daoFreePool.poll();
+            } else {
+                throw new IllegalStateException("Out of DynamicAssetObject pool! Increase pool size with malloc().");
+            }
         }
         return dao;
     }
 
-    /**
-     * Loads a texture using an {@link InputStream}.
-     *
-     * @param mode the loading mode (SYNC or LAZY)
-     * @param assetKey the unique key identifying the texture
-     * @param is the input stream of the texture asset
-     * @param eventKey the event key associated with LAZY loading
-     * @return the loaded {@link Texture} instance
-     */
     public synchronized Texture loadTexture(LoadMode mode, String assetKey, InputStream is, String eventKey) {
-        if (is == null) {
+        if (is == null && !Core.get().isSafeRuntime()) {
             throw new IllegalArgumentException("InputStream cannot be null for texture assetKey: " + assetKey);
         }
         if (textureActiveMap.containsKey(assetKey) || pendingObjects.containsKey(assetKey)) {
@@ -151,7 +148,9 @@ public class AssetManager {
                 try {
                     texture.loadData();
                     synchronized (AssetManager.this) {
-                        if (!dao.isCancelled()) textureActiveMap.put(assetKey, texture);
+                        if (!dao.isCancelled()) {
+                            textureActiveMap.put(assetKey, texture);
+                        }
                     }
                 } catch (Exception e) {
                     synchronized (AssetManager.this) {
@@ -159,6 +158,10 @@ public class AssetManager {
                         freePool.offer(texture);
                     }
                     throw new RuntimeException("LAZY loading fail: " + assetKey, e);
+                } finally {
+                    synchronized (AssetManager.this) {
+                        cleanEmptyPendingEvent(eventKey, dao);
+                    }
                 }
             }, () -> {
                 synchronized (AssetManager.this) {
@@ -176,15 +179,6 @@ public class AssetManager {
         return texture;
     }
 
-    /**
-     * Loads a sound using an {@link InputStream}.
-     *
-     * @param mode the loading mode (SYNC or LAZY)
-     * @param assetKey the unique key identifying the sound
-     * @param is the input stream of the sound asset
-     * @param eventKey the event key associated with LAZY loading
-     * @return the loaded {@link SoundAsset} instance, or {@code null} if in LAZY mode
-     */
     public synchronized SoundAsset loadSound(LoadMode mode, String assetKey, InputStream is, String eventKey) {
         if (is == null) {
             throw new IllegalArgumentException("InputStream cannot be null for sound assetKey: " + assetKey);
@@ -211,8 +205,9 @@ public class AssetManager {
         } else if (mode == LoadMode.LAZY) {
             DynamicAssetObject dao = getFreeDao();
             dao.init(() -> {
+                SoundAsset sound = null;
                 try {
-                    SoundAsset sound = InternalSoundModule.loadSound(is);
+                    sound = InternalSoundModule.loadSound(is);
                     if (sound == null) {
                         throw new RuntimeException("Failed to load sound instance: " + assetKey);
                     }
@@ -225,7 +220,15 @@ public class AssetManager {
                         }
                     }
                 } catch (Exception e) {
+                    if (sound != null) {
+                        sound.stop();
+                        sound.free();
+                    }
                     throw new RuntimeException("LAZY sound loading fail: " + assetKey, e);
+                } finally {
+                    synchronized (AssetManager.this) {
+                        cleanEmptyPendingEvent(eventKey, dao);
+                    }
                 }
             }, () -> recycleTask(assetKey, dao));
             pendingObjects.put(assetKey, dao);
@@ -235,16 +238,6 @@ public class AssetManager {
         return null;
     }
 
-    /**
-     * Loads music using an {@link InputStream}.
-     *
-     * @param mode the loading mode (SYNC or LAZY)
-     * @param type the music type (MEM_MUSIC or STREAM_MUSIC)
-     * @param assetKey the unique key identifying the music
-     * @param is the input stream of the music asset
-     * @param eventKey the event key associated with LAZY loading
-     * @return the loaded {@link MusicAsset} instance, or {@code null} if in LAZY mode
-     */
     public synchronized MusicAsset loadMusic(LoadMode mode, MusicType type, String assetKey, InputStream is, String eventKey) {
         if (is == null) {
             throw new IllegalArgumentException("InputStream cannot be null for music assetKey: " + assetKey);
@@ -271,8 +264,9 @@ public class AssetManager {
         } else if (mode == LoadMode.LAZY) {
             DynamicAssetObject dao = getFreeDao();
             dao.init(() -> {
+                MusicAsset music = null;
                 try {
-                    MusicAsset music = createMusicInstance(type, is);
+                    music = createMusicInstance(type, is);
                     if (music == null) {
                         throw new RuntimeException("Failed to load music instance: " + assetKey);
                     }
@@ -285,7 +279,15 @@ public class AssetManager {
                         }
                     }
                 } catch (Exception e) {
+                    if (music != null) {
+                        music.stop();
+                        music.free();
+                    }
                     throw new RuntimeException("LAZY music loading fail: " + assetKey, e);
+                } finally {
+                    synchronized (AssetManager.this) {
+                        cleanEmptyPendingEvent(eventKey, dao);
+                    }
                 }
             }, () -> recycleTask(assetKey, dao));
             pendingObjects.put(assetKey, dao);
@@ -293,6 +295,16 @@ public class AssetManager {
         }
 
         return null;
+    }
+
+    private void cleanEmptyPendingEvent(String eventKey, DynamicAssetObject dao) {
+        List<DynamicAssetObject> list = pendingEvents.get(eventKey);
+        if (list != null) {
+            list.remove(dao);
+            if (list.isEmpty()) {
+                pendingEvents.remove(eventKey, list);
+            }
+        }
     }
 
     private MusicAsset createMusicInstance(MusicType type, InputStream is) {
@@ -327,7 +339,12 @@ public class AssetManager {
         DynamicAssetObject dao = pendingObjects.remove(assetKey);
         if (dao == null) return false;
 
-        pendingEvents.values().forEach(list -> list.remove(dao));
+        // pendingEvents에서 dao를 제거하고, 비어버린 리스트 엔트리는 맵에서 완전히 제거
+        pendingEvents.entrySet().removeIf(entry -> {
+            entry.getValue().remove(dao);
+            return entry.getValue().isEmpty();
+        });
+
         dao.cancel();
         if (dao.isStarted()) return true;
 

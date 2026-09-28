@@ -15,6 +15,7 @@ public class Config {
     String secretKey, loadingScreenTexturePath;
     InputStream loadingScreenTexture;
     public final SecretKeySpec encryptionKey;
+    boolean safeRuntime = false;
 
     public String getProjectName() { return projectName; }
     /** Returns the stable project identity used for the settings directory. */
@@ -27,6 +28,7 @@ public class Config {
     public String getLoadingScreenTexturePath() { return loadingScreenTexturePath; }
     public boolean isUseIntegerPhysicalScaling() { return useIntegerPhysicalScaling; }
     public String getEncryptionKey() { return secretKey; }
+    public boolean isSafeRuntime() { return safeRuntime; }
 
     private Config(Builder builder) {
         projectName = builder.projectName;
@@ -39,6 +41,7 @@ public class Config {
         secretKey = builder.secretKey == null ? "" : builder.secretKey;
         loadingScreenTexturePath = builder.loadingScreenTexturePath;
         loadingScreenTexture = builder.loadingScreenTexture;
+        safeRuntime = builder.safeRuntime;
         byte[] keyBytes = secretKey.getBytes();
         encryptionKey = new SecretKeySpec(keyBytes.length == 0 ? new byte[]{0} : keyBytes,"AES");
     }
@@ -52,6 +55,7 @@ public class Config {
         String secretKey = "qwerasdfzxcvtyui", loadingScreenTexturePath;
         InputStream loadingScreenTexture;
         boolean preferSavedSettings = true;
+        boolean safeRuntime = false;
 
         public Builder(String projectName) {
             settingsProjectName = java.util.Objects.requireNonNull(projectName);
@@ -69,6 +73,7 @@ public class Config {
         public Builder setLoadingScreenTexture(InputStream value) { loadingScreenTexture = value; loadingScreenTexturePath = null; return this; }
         /** Loads a texture from a file when the engine starts. */
         public Builder setLoadingScreenTexturePath(String value) { loadingScreenTexturePath = value; loadingScreenTexture = null; return this; }
+        public Builder setSafeRuntime(boolean b) { safeRuntime = b; return this; }
 
         public Config build() {
             if (preferSavedSettings) loadSavedValues();
@@ -84,6 +89,7 @@ public class Config {
             useIntegerPhysicalScaling = savedBoolean("useIntegerPhysicalScaling",useIntegerPhysicalScaling);
             String path = read("loadingScreenTexturePath",loadingScreenTexturePath == null ? "" : loadingScreenTexturePath);
             loadingScreenTexturePath = path.isEmpty() ? null : path;
+            safeRuntime = savedBoolean("safeRuntime", safeRuntime);
         }
         private void loadTexture() {
             if (loadingScreenTexturePath != null) {
@@ -109,6 +115,7 @@ public class Config {
             write("useKoreanModule",Boolean.toString(useKoreanModule));
             write("useIntegerPhysicalScaling",Boolean.toString(useIntegerPhysicalScaling));
             write("loadingScreenTexturePath",loadingScreenTexturePath);
+            write("safeRuntime", Boolean.toString(safeRuntime));
         }
         private String read(String name,String fallback) { return EngineSettings.read(settingsProjectName,"core."+name,fallback); }
         private void write(String name,String value) { EngineSettings.write(settingsProjectName,"core."+name,value); }

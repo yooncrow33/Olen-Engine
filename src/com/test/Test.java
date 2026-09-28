@@ -19,6 +19,7 @@ import com.fw.main.utils.platform.system.scene.Bgm;
 import com.fw.main.utils.platform.system.scene.Scene;
 import com.fw.main.utils.platform.system.scene.Sfx;
 import com.fw.main.utils.platform.system.scene.Sprite;
+import org.w3c.dom.Text;
 
 import java.awt.*;
 import java.util.Properties;
@@ -31,17 +32,18 @@ public class Test extends Base {
     Bgm bgm;
     Sprite tex1;
     Sprite tex2;
-    SoundAsset test;
+    Texture texture;
 
     static {
         Core.setConfig(new
-                Config.Builder("CraftCanvas Engine"). // = folder name.
+                Config.Builder("Olen Engine"). // = folder name.
                 setWindowWidth(1280).
                 setWindowHeight(720).
                 setUseKoreanModule(true).
                 setUseIntegerPhysicalScaling(true).
-                setLoadingScreenTexture(IoUtils.getEngineResourceStream("Beisiq1.png")).
+                setLoadingScreenTexture(IoUtils.getEngineResourceStream("yourLoadingScreen.png")).
                 setEncryptionKey("keyforencryption").
+                setSafeRuntime(true).
                 setUseEncryption(false).build()
         );
     }
@@ -106,6 +108,8 @@ public class Test extends Base {
 
         init.getAssetInit().registerBootTexture("olen", IoUtils.getEngineResourceStream("Olen.png"));
 
+        init.getAssetInit().registerBootTexture("nothing", null);
+
         ko.setFocused(true);
         ko.registerKoreanObjectEventListener(new TextObjectEventListener() {
             @Override
@@ -118,9 +122,6 @@ public class Test extends Base {
 
             }
         });
-
-        assetManager.mallocTexturePool(3000);
-        assetManager.mallocLazyLoadPool(500);
 
         for (int i = 0; i < 100; i++) {
             //init.getAssetInit().registerBootTexture("temp_" + i, IoUtils.getEngineResourceStream("CCE.png"));
@@ -135,8 +136,8 @@ public class Test extends Base {
             bgm = sceneInit.registerMusic(IoUtils.getGameResourceStream("music.wav"),true);
 
             sceneInit.createAtlas("DEFAULT_ATLAS", 2, (Scene.AtlasBinderCallback) binder -> {
-                tex1 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq.png"),"tex1");
-                tex2 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq2.png"),"tex2");
+                //tex1 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq.png"),"tex1");
+                //tex2 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq2.png"),"tex2");
             });
 
         }).setName("DEFAULT").build());
@@ -182,9 +183,13 @@ public class Test extends Base {
         g.setColor(Color.CYAN);
         RU.drawStringWithCursor(g, ko, 50, 130, 5, RU.CursorPosition.BOTTOM);
 
-        g.setColor(Color.black);
-        g.fillRect(0,0,1920,1080);
-        g.drawImage(assetManager.getTexture("olen").getVolatileImage(),0,0,1920,1080,null);
+        g.drawImage(assetManager.getTexture("nothing").getVolatileImage(), 20,400,200,200,null);
+
+        //g.setColor(Color.black);
+        //g.fillRect(0,0,1920,1080);
+        //g.drawImage(assetManager.getTexture("olen").getVolatileImage(),0,0,1920,1080,null);
+        g.setColor(Color.CYAN);
+        g.fillRect(0,0,640,320);
     }
 
     public static void main(String[] args) {

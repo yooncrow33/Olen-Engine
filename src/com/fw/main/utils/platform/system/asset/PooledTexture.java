@@ -1,9 +1,14 @@
 package com.fw.main.utils.platform.system.asset;
 
+import com.fw.main.Core;
+import com.fw.main.utils.io.IoUtils;
+import com.fw.main.utils.platform.system.console.Console;
+
 import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
+import java.io.IOException;
 import java.io.InputStream;
 
 class PooledTexture implements Texture {
@@ -34,17 +39,30 @@ class PooledTexture implements Texture {
 
     void setInUse(boolean use) { this.inUse = use; }
 
-    void loadData() throws Exception {
-        if (closed || assetStream == null) return;
-        BufferedImage tempImg;
-        try (InputStream is = this.assetStream) {
-            tempImg = ImageIO.read(is);
-        } finally {
-            this.assetStream = null;
+    void loadData() {
+        if (closed) return;
+
+        BufferedImage tempImg = null;
+        if (this.assetStream != null) {
+            try (InputStream is = this.assetStream) {
+                tempImg = ImageIO.read(is);
+            } catch (IOException e) {
+                if (!Core.get().isSafeRuntime()) {
+                    throw new RuntimeException("Texture I/O fail: " + this.assetKey, e);
+                }
+                assetManager.instance.getConsole().addLog(Console.LogType.SAFE_RUNTIME, "I/O error, instead texture at: " + assetKey);
+            } finally {
+                this.assetStream = null;
+            }
         }
 
         if (tempImg == null) {
-            throw new RuntimeException("Texture load fail: " + this.assetKey);
+            if (Core.get().isSafeRuntime()) {
+                tempImg = assetManager.wrongTexture;
+                assetManager.instance.getConsole().addLog(Console.LogType.SAFE_RUNTIME, "Invalid format or null stream, instead texture at: " + assetKey);
+            } else {
+                throw new RuntimeException("Texture load fail: " + this.assetKey);
+            }
         }
 
         this.width = tempImg.getWidth();
@@ -58,7 +76,12 @@ class PooledTexture implements Texture {
     }
 
     private synchronized void copyToVolatile() {
-        if (backupImage == null || closed) return;
+        if (closed) {
+            return;
+        }
+        if (backupImage == null) {
+            backupImage = assetManager.wrongTexture;
+        }
         Graphics2D g = volatileImage.createGraphics();
         g.setComposite(AlphaComposite.Src);
         g.drawImage(backupImage, 0, 0, null);
@@ -99,7 +122,9 @@ class PooledTexture implements Texture {
         closed = true;
         flush();
         if (backupImage != null) {
-            assetManager.addGarbageList(backupImage);
+            if (backupImage != assetManager.wrongTexture) {
+                backupImage.flush();
+            }
             backupImage = null;
         }
         inUse = false;

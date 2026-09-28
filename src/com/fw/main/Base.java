@@ -37,16 +37,10 @@ import java.awt.image.BufferStrategy;
 import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 import java.io.File;
-import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Method;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
@@ -63,8 +57,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private boolean changeResolution = false;
     private int targetResWidth = -1;
     private int targetResHeight = -1;
-    protected int WINDOW_WIDTH;
-    protected int WINDOW_HEIGHT;
+    public int WINDOW_WIDTH;
+    public int WINDOW_HEIGHT;
     private int targetBitDepth = DisplayMode.BIT_DEPTH_MULTI;
     private int targetRefreshRate = DisplayMode.REFRESH_RATE_UNKNOWN;
     private DisplayMode originalDisplayMode = null;
@@ -158,7 +152,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private volatile ConsoleCMD consoleCMD = null;
     public ConsoleCMD getConsoleCMD() { return consoleCMD; }
     ErrorBoxManager errorBoxManager = new ErrorBoxManager();
-    Console console = null;
+    Console console = new Console(this);
     private Texture logo;
 
     final Font loadingMessageFont = new Font(Font.MONOSPACED, Font.BOLD, 48);
@@ -243,8 +237,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         sysLoadStack.add(() -> {
             if (builder.integerKey != null) { Fw.add(builder.integerKey, this); }
             if (builder.stringKey != null) { Fw.add(builder.stringKey, this); }
-            if (builder.consoleUse) {
-                console = new Console(this);
+            if (!builder.consoleUse) {
+                console.isNotUse();
             }
         });
         sysLoadStack.add(() -> {
@@ -770,7 +764,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                                         method.setAccessible(true);
                                         method.invoke(currentScene);
                                     }
-                                    assetManager.clearGarbage();
 
                                     currentScene = nextScene;
                                 } catch (Throwable t) {
