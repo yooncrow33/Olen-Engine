@@ -48,7 +48,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
-    public static String version = "PRE 0.2.0";
+    public static String version = "PRE 0.2.1";
     public JFrame frame = new JFrame("Olen Engine");
 
     // --- Fullscreen and resolution states ---
@@ -63,6 +63,13 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private DisplayMode originalDisplayMode = null;
     private GraphicsDevice graphicsDevice = null;
 
+    // --- Thread modes and handles ---
+    public enum ThreadMode {
+        SINGLE, DUAL
+    }
+
+    private ThreadMode threadMode = ThreadMode.SINGLE;
+    private Thread mainLoopThread;
     private Thread logicThread;
     private Thread renderThread;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -103,7 +110,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     private BufferStrategy bufferStrategy;
     private VolatileImage vramBuffer;
-
     private VolatileImage vramPass1;
 
     private static final int CRT_SLICES = 64;
@@ -216,6 +222,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.renderingOption = builder.renderingOption;
         this.waitMode = builder.waitMode;
         this.crtJitterEnabled = builder.crtJitterEnabled;
+        this.threadMode = builder.threadMode;
 
         // Bind fullscreen and resolution options
         this.fullScreen = builder.fullScreen;
@@ -228,7 +235,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.WINDOW_HEIGHT = builder.virtualScreenHeight;
         this.useEngineCursor = builder.useEngineCursor;
 
-        viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling(),WINDOW_WIDTH,WINDOW_HEIGHT);
+        viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling(), WINDOW_WIDTH, WINDOW_HEIGHT);
 
         sysLoadStack.add(() -> {
             if (builder.integerKey != null) { Fw.add(builder.integerKey, this); }
@@ -278,6 +285,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         String dumpPerformanceDataFileName;
         RenderingOption renderingOption = RenderingOption.DEFAULT;
         WaitMode waitMode = WaitMode.OS_SLEEP;
+        ThreadMode threadMode = ThreadMode.SINGLE;
         boolean closeWindowWithKillVM = true;
         boolean crtJitterEnabled = true;
         String title = "null";
@@ -293,11 +301,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         int targetBitDepth = DisplayMode.BIT_DEPTH_MULTI;
         int targetRefreshRate = DisplayMode.REFRESH_RATE_UNKNOWN;
 
-        /** Supplies Core configuration without a static initializer. */
         public Builder setCoreConfig(Config.Builder config) {
             coreConfig = java.util.Objects.requireNonNull(config); coreConfigValue = null; return this;
         }
-        /** Supplies an already built Core configuration without a static initializer. */
         public Builder setCoreConfig(Config config) {
             coreConfigValue = java.util.Objects.requireNonNull(config); coreConfig = null; return this;
         }
@@ -327,6 +333,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
+        public Builder setThreadMode(ThreadMode threadMode) {
+            this.threadMode = java.util.Objects.requireNonNull(threadMode);
+            return this;
+        }
+
         public Builder setPerformanceRecorderOption(PerformanceRecorder.CaptureMode performanceRecorderOption, String dumpPerformanceDataFileName) {
             this.performanceRecorderOption = performanceRecorderOption;
             this.dumpPerformanceDataFileName = dumpPerformanceDataFileName;
@@ -348,13 +359,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
-        /** Sets whether to use full screen */
         public Builder setFullScreen(boolean fullScreen) {
             this.fullScreen = fullScreen;
             return this;
         }
 
-        /** Sets the forced resolution on entering full screen (width x height) */
         public Builder setDisplayResolution(int width, int height) {
             return setDisplayResolution(width, height, DisplayMode.BIT_DEPTH_MULTI, DisplayMode.REFRESH_RATE_UNKNOWN);
         }
@@ -374,7 +383,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
-        /** Sets detailed display parameters on entering full screen (width x height x bit depth x refresh rate) */
         public Builder setDisplayResolution(int width, int height, int bitDepth, int refreshRate) {
             this.changeResolution = true;
             this.targetResWidth = width;
@@ -408,6 +416,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 waitMode = WaitMode.valueOf(SettingFiles.read("base.waitMode", waitMode.name()));
             } catch (IllegalArgumentException ignored) { }
             try {
+                threadMode = ThreadMode.valueOf(SettingFiles.read("base.threadMode", threadMode.name()));
+            } catch (IllegalArgumentException ignored) { }
+            try {
                 performanceRecorderOption = PerformanceRecorder.CaptureMode.valueOf(
                         SettingFiles.read("base.performanceRecorderOption", performanceRecorderOption.name()));
             } catch (IllegalArgumentException ignored) { }
@@ -419,6 +430,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             SettingFiles.write("base.consoleUse", Boolean.toString(consoleUse));
             SettingFiles.write("base.renderingOption", renderingOption.name());
             SettingFiles.write("base.waitMode", waitMode.name());
+            SettingFiles.write("base.threadMode", threadMode.name());
             SettingFiles.write("base.performanceRecorderOption", performanceRecorderOption.name());
             SettingFiles.write("base.dumpPerformanceDataFileName", dumpPerformanceDataFileName);
             SettingFiles.write("base.closeWindowWithKillVM", Boolean.toString(closeWindowWithKillVM));
@@ -440,7 +452,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         }
     }
 
-    /** Stores one setting in each properties file under the current project directory. */
     protected static final class SettingFiles {
         public static String read(String name, String fallback) {
             return EngineSettings.read(Core.get().getSettingsProjectName(), name, fallback);
@@ -501,12 +512,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             if (graphicsDevice.isFullScreenSupported()) {
                 frame.pack();
-                frame.setVisible(true); // Required before binding FSEM window on some platforms
+                frame.setVisible(true);
 
                 graphicsDevice.setFullScreenWindow(frame);
                 originalDisplayMode = graphicsDevice.getDisplayMode();
 
-                // When forced resolution change is requested
                 if (changeResolution && targetResWidth > 0 && targetResHeight > 0) {
                     if (graphicsDevice.isDisplayChangeSupported()) {
                         DisplayMode bestMode = findBestDisplayMode(graphicsDevice, targetResWidth, targetResHeight, targetBitDepth, targetRefreshRate);
@@ -576,10 +586,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } else {
                     viewMetrics.updateVirtualMouse(e.getX(), e.getY());
                 }
-
             }
         });
-
 
         this.addComponentListener(new ComponentAdapter() {
             @Override
@@ -614,7 +622,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             }
         });
     }
-
 
     private DisplayMode findBestDisplayMode(GraphicsDevice device, int width, int height, int bitDepth, int refreshRate) {
         DisplayMode[] modes = device.getDisplayModes();
@@ -724,7 +731,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         if (Core.get().loadingScreenTexture != null) {
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", Core.get().loadingScreenTexture, null);
         } else {
-            //ErrorBoxManager.addError("Custom Loading Screen Load Fail", "instead to default screen.");
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
         }
 
@@ -732,96 +738,142 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         startAsyncLoading();
     }
 
-    private void threadLaunch() {
-        System.out.println(InternalUtils.Time.getTimeFormate() + " / logic thread start");
+    private void handleSceneTransition() {
+        if (isChangeScene.compareAndSet(true, false)) {
+            Scene nextScene = this.pendingScene;
+            this.pendingScene = null;
 
-        running.set(true);
-        logicThread = new Thread(() -> {
-            long lastTime = System.nanoTime();
-            long nextTick = lastTime;
-            final double targetFps = 60.0;
-            final long nsPerTick = (long) (1000000000.0 / targetFps);
+            if (nextScene != null) {
+                isSceneLoading.set(true);
 
-            while (running.get()) {
-                long now = System.nanoTime();
-                double deltaTime = (now - lastTime) / 1_000_000_000.0;
-                lastTime = now;
+                new Thread(() -> {
+                    try {
+                        nextScene.init();
 
-                try {
-                    if (initLoadEnd.get() && !isSceneLoading.get()) {
-                        long frameStartNanos = System.nanoTime();
-                        update(deltaTime);
-                        if (recorder != null) recorder.update();
-                        recordCpuPresentedFrame(System.nanoTime() - frameStartNanos);
-                    }
-                } catch (Throwable t) {
-                    t.printStackTrace();
-                }
-
-                nextTick += nsPerTick;
-                if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
-                waitForNextTick(nextTick);
-            }
-        });
-
-        logicThread.setName("logicLoop");
-        logicThread.start();
-
-        System.out.println(InternalUtils.Time.getTimeFormate() + " / render thread start");
-
-        running.set(true);
-        renderThread = new Thread(() -> {
-            long lastTime = System.nanoTime();
-            long nextTick = lastTime;
-            final double targetFps = 60.0;
-            final long nsPerTick = (long) (1000000000.0 / targetFps);
-
-            while (running.get()) {
-                long now = System.nanoTime();
-                lastTime = now;
-
-                try {
-                    if (isChangeScene.compareAndSet(true, false)) {
-                        Scene nextScene = this.pendingScene;
-                        this.pendingScene = null;
-
-                        if (nextScene != null) {
-                            isSceneLoading.set(true);
-
-                            new Thread(() -> {
-                                try {
-                                    nextScene.init();
-
-                                    if (currentScene != null) {
-                                        Method method = currentScene.getClass().getDeclaredMethod("dispose");
-                                        method.setAccessible(true);
-                                        method.invoke(currentScene);
-                                    }
-
-                                    currentScene = nextScene;
-                                } catch (Throwable t) {
-                                    t.printStackTrace();
-                                    System.err.println("Asset loading failed! Aborting engine.");
-                                    System.exit(1);
-                                } finally {
-                                    isSceneLoading.set(false);
-                                }
-                            }, "Scene-Loader").start();
+                        if (currentScene != null) {
+                            Method method = currentScene.getClass().getDeclaredMethod("dispose");
+                            method.setAccessible(true);
+                            method.invoke(currentScene);
                         }
+
+                        currentScene = nextScene;
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                        System.err.println("Asset loading failed! Aborting engine.");
+                        System.exit(1);
+                    } finally {
+                        isSceneLoading.set(false);
                     }
-                    renderLoop();
-                } catch (Throwable t) {
-                    t.printStackTrace();
-                }
-
-                nextTick += nsPerTick;
-                if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
-                waitForNextTick(nextTick);
+                }, "Scene-Loader").start();
             }
-        });
+        }
+    }
 
-        renderThread.setName("renderLoop");
-        renderThread.start();
+    private void threadLaunch() {
+        running.set(true);
+
+        if (threadMode == ThreadMode.SINGLE) {
+            System.out.println(InternalUtils.Time.getTimeFormate() + " / single-thread loop start");
+
+            mainLoopThread = new Thread(() -> {
+                long lastTime = System.nanoTime();
+                long nextTick = lastTime;
+                final double targetFps = 60.0;
+                final long nsPerTick = (long) (1_000_000_000.0 / targetFps);
+
+                while (running.get()) {
+                    long now = System.nanoTime();
+                    double deltaTime = (now - lastTime) / 1_000_000_000.0;
+                    lastTime = now;
+
+                    try {
+                        handleSceneTransition();
+
+                        // 1. CPU / Logic Step
+                        if (initLoadEnd.get() && !isSceneLoading.get()) {
+                            long cpuStartNanos = System.nanoTime();
+                            update(deltaTime);
+                            if (recorder != null) recorder.update();
+                            recordCpuPresentedFrame(System.nanoTime() - cpuStartNanos);
+                        }
+
+                        // 2. GPU / Render Step (순차적 실행 및 렌더 시간 측정)
+                        renderLoop();
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+
+                    nextTick += nsPerTick;
+                    if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
+                    waitForNextTick(nextTick);
+                }
+            });
+
+            mainLoopThread.setName("mainLoop");
+            mainLoopThread.start();
+
+        } else {
+            System.out.println(InternalUtils.Time.getTimeFormate() + " / logic thread start");
+
+            logicThread = new Thread(() -> {
+                long lastTime = System.nanoTime();
+                long nextTick = lastTime;
+                final double targetFps = 60.0;
+                final long nsPerTick = (long) (1_000_000_000.0 / targetFps);
+
+                while (running.get()) {
+                    long now = System.nanoTime();
+                    double deltaTime = (now - lastTime) / 1_000_000_000.0;
+                    lastTime = now;
+
+                    try {
+                        if (initLoadEnd.get() && !isSceneLoading.get()) {
+                            long frameStartNanos = System.nanoTime();
+                            update(deltaTime);
+                            if (recorder != null) recorder.update();
+                            recordCpuPresentedFrame(System.nanoTime() - frameStartNanos);
+                        }
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+
+                    nextTick += nsPerTick;
+                    if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
+                    waitForNextTick(nextTick);
+                }
+            });
+
+            logicThread.setName("logicLoop");
+            logicThread.start();
+
+            System.out.println(InternalUtils.Time.getTimeFormate() + " / render thread start");
+
+            renderThread = new Thread(() -> {
+                long lastTime = System.nanoTime();
+                long nextTick = lastTime;
+                final double targetFps = 60.0;
+                final long nsPerTick = (long) (1_000_000_000.0 / targetFps);
+
+                while (running.get()) {
+                    long now = System.nanoTime();
+                    lastTime = now;
+
+                    try {
+                        handleSceneTransition();
+                        renderLoop();
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+
+                    nextTick += nsPerTick;
+                    if (System.nanoTime() - nextTick >= nsPerTick) nextTick = System.nanoTime();
+                    waitForNextTick(nextTick);
+                }
+            });
+
+            renderThread.setName("renderLoop");
+            renderThread.start();
+        }
     }
 
     private void waitForNextTick(long deadlineNanos) {
@@ -852,7 +904,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 }
             }
         } catch (InterruptedException e) {
-            //Thread.currentThread().interrupt();
             running.set(false);
         }
     }
@@ -950,8 +1001,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         int currentWidth = getWidth();
         int currentHeight = getHeight();
         if (currentWidth <= 0 || currentHeight <= 0) return;
-
-        // Base.java - renderLoop() 내 CRT 렌더링 블록
 
         if (renderingOption != null && renderingOption.name().equals("CRT")) {
             GraphicsConfiguration gc = getGraphicsConfiguration();
@@ -1106,7 +1155,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
-
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
         } else if (renderingOption.equals(RenderingOption.LEGACY)) {
@@ -1288,14 +1336,20 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         new Thread(() -> {
             try {
+                if (mainLoopThread != null) mainLoopThread.join(2000);
                 if (logicThread != null) logicThread.join(2000);
                 if (renderThread != null) renderThread.join(2000);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
 
-            boolean logicStopped = (logicThread == null || !logicThread.isAlive());
-            if (!logicStopped) {
+            boolean logicStopped = (mainLoopThread == null || !mainLoopThread.isAlive()) &&
+                    (logicThread == null || !logicThread.isAlive());
+
+            if (mainLoopThread != null && mainLoopThread.isAlive()) {
+                mainLoopThread.interrupt();
+            }
+            if (logicThread != null && logicThread.isAlive()) {
                 logicThread.interrupt();
             }
             if (renderThread != null && renderThread.isAlive()) {
@@ -1432,12 +1486,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public void addLog(String str) {
         System.out.println(str);
-        console.addLog(Console.LogType.SYSTEM,str);
+        console.addLog(Console.LogType.SYSTEM, str);
     }
-
 
     public void addErrorLog(String str) {
         System.out.println(str);
-        console.addLog(Console.LogType.SYSTEM ,str);
+        console.addLog(Console.LogType.SYSTEM, str);
     }
 }
