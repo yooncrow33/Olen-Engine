@@ -7,12 +7,18 @@ import java.io.OutputStream;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
+import java.lang.management.RuntimeMXBean;
+import java.lang.management.CompilationMXBean;
+import java.lang.management.ThreadMXBean;
+import java.awt.GraphicsEnvironment;
+import java.awt.GraphicsDevice;
+import java.awt.DisplayMode;
+import java.util.*;
 
 import com.fw.internal.sys.base.view.AccessConsole;
 import com.fw.internal.utils.InternalUtils;
 import com.fw.main.utils.platform.system.console.Console;
 import com.sun.management.OperatingSystemMXBean;
-import java.util.*;
 
 public class PerformanceRecorder {
 
@@ -75,7 +81,7 @@ public class PerformanceRecorder {
 
     public PerformanceRecorder(BaseWorkTimeProvider baseProvider, AccessConsole accessConsole, CaptureMode mode) {
         if (mode == CaptureMode.DO_NOT) {
-            accessConsole.getConsole().addLog(Console.LogType.ERROR,"DO_NOT option bypassed for PerformanceRecorder. Overriding with EVERY_SECOND recording.");
+            accessConsole.getConsole().addLog(Console.LogType.ERROR, "DO_NOT option bypassed for PerformanceRecorder. Overriding with EVERY_SECOND recording.");
         }
         this.baseProvider = baseProvider;
         this.mode = (mode != null) ? mode : CaptureMode.EVERY_FRAME;
@@ -114,11 +120,9 @@ public class PerformanceRecorder {
             return;
         }
 
-        // CPU 사용률 (0~100 스케일 변환)
         double cpuLoad = (osBean != null) ? osBean.getCpuLoad() : -1.0;
         long cpuPercent = (cpuLoad >= 0) ? (long) (cpuLoad * 100) : 0L;
 
-        // 메모리 (Bytes)
         long heapUsed = memBean.getHeapMemoryUsage().getUsed();
         long nonHeapUsed = memBean.getNonHeapMemoryUsage().getUsed();
 
@@ -165,8 +169,128 @@ public class PerformanceRecorder {
             folder.mkdirs();
         }
 
-        File dumpFile = new File(folder, fileName+".fwD");
+        File dumpFile = new File(folder, fileName + ".fwD");
         Properties prop = new Properties();
+
+        try {
+            // 1. OS & 계정 & 로케일 환경
+            prop.setProperty("sysinfo.OS_NAME", System.getProperty("os.name", "Unknown"));
+            prop.setProperty("sysinfo.OS_VERSION", System.getProperty("os.version", "Unknown"));
+            prop.setProperty("sysinfo.OS_ARCH", System.getProperty("os.arch", "Unknown"));
+            prop.setProperty("sysinfo.OS_PATCH", System.getProperty("sun.os.patch.level", "None"));
+            prop.setProperty("sysinfo.USER_NAME", System.getProperty("user.name", "Unknown"));
+            prop.setProperty("sysinfo.USER_HOME", System.getProperty("user.home", "Unknown"));
+            prop.setProperty("sysinfo.USER_DIR", System.getProperty("user.dir", "Unknown"));
+            prop.setProperty("sysinfo.TMP_DIR", System.getProperty("java.io.tmpdir", "Unknown"));
+            prop.setProperty("sysinfo.FILE_ENCODING", System.getProperty("file.encoding", "Unknown"));
+            prop.setProperty("sysinfo.TIMEZONE", TimeZone.getDefault().getID());
+
+            String compName = System.getenv("COMPUTERNAME");
+            if (compName == null) compName = System.getenv("HOSTNAME");
+            prop.setProperty("sysinfo.COMPUTER_NAME", (compName != null) ? compName : "Unknown");
+            prop.setProperty("sysinfo.USER_DOMAIN", Optional.ofNullable(System.getenv("USERDOMAIN")).orElse("Local"));
+            prop.setProperty("sysinfo.SESSION_NAME", Optional.ofNullable(System.getenv("SESSIONNAME")).orElse("Console"));
+
+            // 2. CPU & 프로세스 식별
+            prop.setProperty("sysinfo.PROCESS_PID", String.valueOf(ProcessHandle.current().pid()));
+            prop.setProperty("sysinfo.CPU_CORES", String.valueOf(Runtime.getRuntime().availableProcessors()));
+            String procId = System.getenv("PROCESSOR_IDENTIFIER");
+            if (procId == null) procId = System.getenv("PROCESSOR_ARCHITECTURE");
+            prop.setProperty("sysinfo.PROCESSOR_ID", (procId != null) ? procId : "Unknown");
+            prop.setProperty("sysinfo.PROCESSOR_LEVEL", Optional.ofNullable(System.getenv("PROCESSOR_LEVEL")).orElse("N/A"));
+            prop.setProperty("sysinfo.PROCESSOR_REV", Optional.ofNullable(System.getenv("PROCESSOR_REVISION")).orElse("N/A"));
+
+            // 3. 네트워크 인터페이스
+            try {
+                java.net.InetAddress local = java.net.InetAddress.getLocalHost();
+                prop.setProperty("sysinfo.HOST_NAME", local.getHostName());
+                prop.setProperty("sysinfo.HOST_IP", local.getHostAddress());
+
+                Enumeration<java.net.NetworkInterface> nifs = java.net.NetworkInterface.getNetworkInterfaces();
+                int netCount = 0;
+                while (nifs != null && nifs.hasMoreElements()) {
+                    java.net.NetworkInterface nif = nifs.nextElement();
+                    if (!nif.isLoopback() && nif.isUp()) netCount++;
+                }
+                prop.setProperty("sysinfo.ACTIVE_NET_IF_COUNT", String.valueOf(netCount));
+            } catch (Throwable ignored) {}
+
+            // 4. 그래픽 & 디스플레이
+            GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+            GraphicsDevice[] gds = ge.getScreenDevices();
+            prop.setProperty("sysinfo.SCREEN_COUNT", String.valueOf(gds.length));
+            if (gds.length > 0) {
+                GraphicsDevice gd = ge.getDefaultScreenDevice();
+                DisplayMode dm = gd.getDisplayMode();
+                long vram = gd.getAvailableAcceleratedMemory();
+                prop.setProperty("sysinfo.DISPLAY_INFO", dm.getWidth() + "x" + dm.getHeight() + " @" + dm.getRefreshRate() + "Hz (" + dm.getBitDepth() + "bit)");
+                if (vram >= 0) prop.setProperty("sysinfo.ACCEL_VRAM", formatBytes(vram));
+            }
+
+            // 5. JVM 런타임 & 스레드
+            prop.setProperty("sysinfo.JAVA_VERSION", System.getProperty("java.version", "Unknown"));
+            prop.setProperty("sysinfo.JAVA_VENDOR", System.getProperty("java.vendor", "Unknown"));
+            prop.setProperty("sysinfo.JAVA_VM_NAME", System.getProperty("java.vm.name", "Unknown"));
+            prop.setProperty("sysinfo.JAVA_HOME", System.getProperty("java.home", "Unknown"));
+
+            RuntimeMXBean rBean = ManagementFactory.getRuntimeMXBean();
+            if (rBean != null) {
+                prop.setProperty("sysinfo.JVM_UPTIME", (rBean.getUptime() / 1000) + "s");
+                prop.setProperty("sysinfo.JVM_INPUT_ARGS", String.join(" ", rBean.getInputArguments()));
+            }
+
+            CompilationMXBean cBean = ManagementFactory.getCompilationMXBean();
+            if (cBean != null) {
+                prop.setProperty("sysinfo.JIT_COMPILER", cBean.getName());
+            }
+
+            ThreadMXBean tBean = ManagementFactory.getThreadMXBean();
+            if (tBean != null) {
+                prop.setProperty("sysinfo.THREAD_COUNT", String.valueOf(tBean.getThreadCount()));
+                prop.setProperty("sysinfo.PEAK_THREAD_COUNT", String.valueOf(tBean.getPeakThreadCount()));
+                prop.setProperty("sysinfo.DAEMON_THREAD_COUNT", String.valueOf(tBean.getDaemonThreadCount()));
+            }
+
+            // 6. 메모리 사양 (물리/가상/스왑/JVM)
+            prop.setProperty("sysinfo.JVM_MAX_MEMORY", String.valueOf(Runtime.getRuntime().maxMemory()));
+            prop.setProperty("sysinfo.JVM_TOTAL_MEMORY", String.valueOf(Runtime.getRuntime().totalMemory()));
+            prop.setProperty("sysinfo.JVM_FREE_MEMORY", String.valueOf(Runtime.getRuntime().freeMemory()));
+
+            if (osBean != null) {
+                long totalPhysical = osBean.getTotalPhysicalMemorySize();
+                long freePhysical = osBean.getFreePhysicalMemorySize();
+                long committedVm = osBean.getCommittedVirtualMemorySize();
+                long totalSwap = osBean.getTotalSwapSpaceSize();
+                long freeSwap = osBean.getFreeSwapSpaceSize();
+
+                if (totalPhysical > 0) prop.setProperty("sysinfo.TOTAL_PHYSICAL_MEM", String.valueOf(totalPhysical));
+                if (freePhysical > 0) prop.setProperty("sysinfo.FREE_PHYSICAL_MEM", String.valueOf(freePhysical));
+                if (committedVm > 0) prop.setProperty("sysinfo.COMMITTED_VM", String.valueOf(committedVm));
+                if (totalSwap > 0) prop.setProperty("sysinfo.TOTAL_SWAP_MEM", String.valueOf(totalSwap));
+                if (freeSwap > 0) prop.setProperty("sysinfo.FREE_SWAP_MEM", String.valueOf(freeSwap));
+            }
+
+            // 7. 가비지 컬렉터 목록
+            StringBuilder gcNames = new StringBuilder();
+            for (GarbageCollectorMXBean gc : gcBeans) {
+                if (gcNames.length() > 0) gcNames.append(", ");
+                gcNames.append(gc.getName());
+            }
+            prop.setProperty("sysinfo.GC_NAMES", gcNames.toString());
+
+            // 8. 디스크 볼륨 목록 전수 순회
+            File[] roots = File.listRoots();
+            if (roots != null) {
+                StringBuilder diskSummary = new StringBuilder();
+                for (File root : roots) {
+                    if (diskSummary.length() > 0) diskSummary.append(" | ");
+                    diskSummary.append(root.getAbsolutePath())
+                            .append(" Free: ").append(formatBytes(root.getFreeSpace()))
+                            .append("/").append(formatBytes(root.getTotalSpace()));
+                }
+                prop.setProperty("sysinfo.DISK_VOLUMES", diskSummary.toString());
+            }
+        } catch (Throwable ignored) {}
 
         synchronized (lock) {
             PrimitiveLongList baseList = recordMap.get("CPU_USAGE_PERCENT");
@@ -196,6 +320,12 @@ public class PerformanceRecorder {
             System.err.println("[Profiler] 덤프 파일 저장 실패: " + dumpFile.getAbsolutePath());
             e.printStackTrace();
         }
+    }
+
+    private static String formatBytes(long bytes) {
+        if (bytes >= 1024L * 1024 * 1024) return String.format("%.1fGB", bytes / (1024.0 * 1024 * 1024));
+        if (bytes >= 1024L * 1024) return String.format("%.1fMB", bytes / (1024.0 * 1024));
+        return bytes + "B";
     }
 
     public interface BaseWorkTimeProvider {

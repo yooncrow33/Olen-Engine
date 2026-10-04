@@ -3,19 +3,18 @@ package com.fw.internal.sys.input;
 import com.fw.main.Base;
 import com.fw.main.utils.input.mouse.FwMouseAPI;
 import com.fw.main.utils.input.mouse.MouseInterface;
-import javax.swing.*;
 import java.awt.event.*;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
-public class MouseAtBase implements MouseListener, MouseWheelListener {
+public class MouseAtBase implements MouseListener, MouseMotionListener, MouseWheelListener {
 
     private MouseInterface mouseInterface = null;
-
     private final Queue<FwMouseAPI> apiPool = new ConcurrentLinkedQueue<>();
 
     public MouseAtBase(Base component) {
         component.addMouseListener(this);
+        component.addMouseMotionListener(this);
         component.addMouseWheelListener(this);
     }
 
@@ -66,6 +65,16 @@ public class MouseAtBase implements MouseListener, MouseWheelListener {
     @Override
     public void mouseExited(MouseEvent e) {
         handleMouseEvent(e, api -> mouseInterface.mouseExited(api));
+    }
+
+    @Override
+    public void mouseDragged(MouseEvent e) {
+        handleMouseEvent(e, api -> mouseInterface.mouseDragged(api));
+    }
+
+    @Override
+    public void mouseMoved(MouseEvent e) {
+        handleMouseEvent(e, api -> mouseInterface.mouseMoved(api));
     }
 
     @Override

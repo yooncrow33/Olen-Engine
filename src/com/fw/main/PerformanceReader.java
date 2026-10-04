@@ -7,8 +7,6 @@ import com.fw.main.utils.platform.system.scene.Scene;
 import com.fw.main.utils.platform.system.performance.GraphTab;
 
 import java.awt.*;
-import java.awt.event.MouseEvent;
-import java.awt.event.MouseMotionAdapter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
@@ -20,15 +18,19 @@ public class PerformanceReader extends Base {
     private final List<GraphTab> tabList = new ArrayList<>();
     private int currentTab = 0;
 
-    private static final int GRAPH_X = 50;
+    private static final int GRAPH_X = 40;
     private static final int GRAPH_Y = 85;
-    private static final int GRAPH_WIDTH = 1500;
-    private static final int GRAPH_HEIGHT = 740;
+    private static final int GRAPH_WIDTH = 1840;
+    private static final int GRAPH_HEIGHT = 955;
+
+    // 드래그 델타 계산용 이전 좌표 (가상 좌표계)
+    private int lastDragVX = 0;
+    private int lastDragVY = 0;
 
     static {
-        Core.setConfig(new Config.Builder("Performance Data.")
-                .setWindowWidth(1600)
-                .setWindowHeight(900)
+        Core.setConfig(new Config.Builder("Performance Data Reader")
+                .setWindowWidth(1920)
+                .setWindowHeight(1080)
                 .setUseKoreanModule(true)
                 .setUseIntegerPhysicalScaling(true)
                 .setEncryptionKey("keyforencryption")
@@ -50,12 +52,19 @@ public class PerformanceReader extends Base {
     public static class ProfileDataResult {
         public final Map<String, Long[]> dataMap = new LinkedHashMap<>();
         public final Map<Integer, String> phaseMap = new TreeMap<>();
+        public final Map<String, String> sysInfoMap = new LinkedHashMap<>();
     }
 
     public static ProfileDataResult loadProfileFromStream(InputStream in) throws IOException {
         ProfileDataResult result = new ProfileDataResult();
         Properties prop = new Properties();
         prop.load(in);
+
+        for (String key : prop.stringPropertyNames()) {
+            if (key.startsWith("sysinfo.")) {
+                result.sysInfoMap.put(key.substring(8), prop.getProperty(key));
+            }
+        }
 
         String phaseStr = prop.getProperty("phases", "");
         if (!phaseStr.isEmpty()) {
@@ -108,32 +117,34 @@ public class PerformanceReader extends Base {
                 ProfileDataResult profile = loadProfileFromStream(in);
 
                 for (Map.Entry<String, Long[]> entry : profile.dataMap.entrySet()) {
-                    tabList.add(new GraphTab(entry.getKey(), entry.getValue(), profile.phaseMap));
+                    tabList.add(new GraphTab(entry.getKey(), entry.getValue(), profile.phaseMap, profile.sysInfoMap));
                 }
             } catch (Exception e) {
                 e.printStackTrace();
             }
         }
+    }
 
-        this.addMouseMotionListener(new MouseMotionAdapter() {
-            @Override
-            public void mouseDragged(MouseEvent e) {
-                if (!tabList.isEmpty()) {
-                    int virtualX = (int) (e.getX() / getViewScale());
-                    tabList.get(currentTab).onMouseDragged(virtualX, GRAPH_WIDTH);
-                }
-            }
-        });
+    private int toVirtualX(int physicalX) {
+        double scale = getViewScale();
+        return (scale > 0) ? (int) (physicalX / scale) : physicalX;
+    }
+
+    private int toVirtualY(int physicalY) {
+        double scale = getViewScale();
+        return (scale > 0) ? (int) (physicalY / scale) : physicalY;
     }
 
     @Override
     public void setMouse(Mouse mouse) {
+        // 엔진 고유의 MouseInterface만을 사용하여 완벽 구동
         mouse.registerMouseInterface(new MouseInterface() {
             @Override
             public void mouseClicked(FwMouseAPI e) {
-                int vx = getMouseX();
-                int vy = getMouseY();
+                int vx = toVirtualX(e.getX());
+                int vy = toVirtualY(e.getY());
 
+                // 상단 메인 탭 전환
                 int startX = GRAPH_X;
                 for (int i = 0; i < tabList.size(); i++) {
                     if (vx >= startX && vx <= startX + 180 && vy >= 35 && vy <= 70) {
@@ -143,6 +154,7 @@ public class PerformanceReader extends Base {
                     startX += 190;
                 }
 
+                // Phase 탭 및 RST CAP 버튼
                 if (!tabList.isEmpty()) {
                     tabList.get(currentTab).onSubTabClick(vx, vy, GRAPH_X, GRAPH_Y, GRAPH_HEIGHT);
                 }
@@ -150,16 +162,39 @@ public class PerformanceReader extends Base {
 
             @Override
             public void mousePressed(FwMouseAPI e) {
-                if (!tabList.isEmpty()) {
-                    tabList.get(currentTab).onMousePressed(getMouseX());
-                }
+                lastDragVX = toVirtualX(e.getX());
+                lastDragVY = toVirtualY(e.getY());
             }
 
             @Override
             public void mouseReleased(FwMouseAPI e) {
-                if (!tabList.isEmpty()) {
-                    tabList.get(currentTab).onMouseReleased();
+            }
+
+            @Override
+            public void mouseDragged(FwMouseAPI e) {
+                if (tabList.isEmpty()) return;
+
+                int curVX = toVirtualX(e.getX());
+                int curVY = toVirtualY(e.getY());
+
+                int dx = curVX - lastDragVX;
+                int dy = curVY - lastDragVY;
+
+                GraphTab tab = tabList.get(currentTab);
+
+                // 엔진 API(isRightButton, isLeftButton)를 통해 드래그 중인 버튼 판별
+                if (e.isRightButton()) {
+                    if (dy != 0) {
+                        tab.adjustCap(dy);
+                    }
+                } else if (e.isLeftButton()) {
+                    if (dx != 0) {
+                        tab.pan(dx, GRAPH_WIDTH);
+                    }
                 }
+
+                lastDragVX = curVX;
+                lastDragVY = curVY;
             }
 
             @Override public void mouseEntered(FwMouseAPI e) {}
@@ -167,8 +202,15 @@ public class PerformanceReader extends Base {
 
             @Override
             public void mouseWheelMoved(FwMouseAPI e) {
-                if (!tabList.isEmpty()) {
-                    tabList.get(currentTab).onMouseWheel(e, getMouseX(), GRAPH_WIDTH);
+                if (tabList.isEmpty()) return;
+                int vx = toVirtualX(e.getX());
+                int rot = e.getWheelRotation();
+
+                if (e.isShiftDown()) {
+                    float factor = (rot < 0) ? 0.85f : 1.15f;
+                    tabList.get(currentTab).adjustCapByFactor(factor);
+                } else {
+                    tabList.get(currentTab).zoom(rot, vx, GRAPH_WIDTH);
                 }
             }
         });
@@ -200,10 +242,9 @@ public class PerformanceReader extends Base {
         } else {
             g.setColor(Color.WHITE);
             g.setFont(new Font("SansSerif", Font.PLAIN, 16));
-            g.drawString("data was not selected.", GRAPH_X + 20, GRAPH_Y + 40);
+            g.drawString("No data selected.", GRAPH_X + 20, GRAPH_Y + 40);
         }
     }
-
 
     public static void main(String[] args) {
         new PerformanceReader().launch();

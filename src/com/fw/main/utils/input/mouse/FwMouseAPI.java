@@ -1,5 +1,6 @@
 package com.fw.main.utils.input.mouse;
 
+import java.awt.event.InputEvent;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseWheelEvent;
 
@@ -10,9 +11,13 @@ public class FwMouseAPI {
     public FwMouseAPI() {
     }
 
-    public int getX() { return rawEvent.getX(); }
+    public int getX() {
+        return rawEvent != null ? rawEvent.getX() : 0;
+    }
 
-    public int getY() { return rawEvent.getY(); }
+    public int getY() {
+        return rawEvent != null ? rawEvent.getY() : 0;
+    }
 
     public void setRawEvent(MouseEvent e) {
         this.rawEvent = e;
@@ -23,49 +28,57 @@ public class FwMouseAPI {
     }
 
     /**
-     * @return MouseEvent.BUTTON1 (좌), BUTTON2 (휠), BUTTON3 (우), NOBUTTON
+     * Returns which mouse button changed state (PRESSED, RELEASED, CLICKED).
+     * NOTE: During mouseDragged, AWT returns NOBUTTON (0). Use isLeftButton() or isRightButton() to check held buttons.
      */
     public int getButton() {
-        return rawEvent.getButton();
+        return rawEvent != null ? rawEvent.getButton() : MouseEvent.NOBUTTON;
     }
 
     /**
-     * @return 더블 클릭이면 true, 그렇지 않으면 false
+     * Returns true if the left mouse button is pressed or being held during a drag.
      */
+    public boolean isLeftButton() {
+        if (rawEvent == null) return false;
+        return (rawEvent.getModifiersEx() & InputEvent.BUTTON1_DOWN_MASK) != 0 || rawEvent.getButton() == MouseEvent.BUTTON1;
+    }
+
+    /**
+     * Returns true if the right mouse button is pressed or being held during a drag.
+     */
+    public boolean isRightButton() {
+        if (rawEvent == null) return false;
+        return (rawEvent.getModifiersEx() & InputEvent.BUTTON3_DOWN_MASK) != 0 || rawEvent.getButton() == MouseEvent.BUTTON3;
+    }
+
     public boolean isDoubleClick() {
-        return rawEvent.getClickCount() == 2;
+        return rawEvent != null && rawEvent.getClickCount() == 2;
     }
 
-    /**
-     * OS별 플랫폼 기준의 팝업 메뉴 트리거인지 여부를 반환합니다.
-     */
     public boolean isPopupTrigger() {
-        return rawEvent.isPopupTrigger();
+        return rawEvent != null && rawEvent.isPopupTrigger();
     }
 
     public boolean isControlDown() {
-        return rawEvent.isControlDown();
+        return rawEvent != null && rawEvent.isControlDown();
     }
 
     public boolean isShiftDown() {
-        return rawEvent.isShiftDown();
+        return rawEvent != null && rawEvent.isShiftDown();
     }
 
     public boolean isAltDown() {
-        return rawEvent.isAltDown();
+        return rawEvent != null && rawEvent.isAltDown();
     }
 
     public boolean isMetaDown() {
-        return rawEvent.isMetaDown();
+        return rawEvent != null && rawEvent.isMetaDown();
     }
 
     public int getModifiersEx() {
-        return rawEvent.getModifiersEx();
+        return rawEvent != null ? rawEvent.getModifiersEx() : 0;
     }
 
-    /**
-     * @return 음수면 위로, 양수면 아래로 스크롤. 휠 이벤트가 아니면 0 반환.
-     */
     public int getWheelRotation() {
         if (rawEvent instanceof MouseWheelEvent) {
             return ((MouseWheelEvent) rawEvent).getWheelRotation();
@@ -73,11 +86,6 @@ public class FwMouseAPI {
         return 0;
     }
 
-    /**
-     * 정밀 스크롤 방향과 양을 정수(int) 형태로 반환합니다.
-     * 기존 double 값을 int로 캐스팅하여 반환합니다.
-     * @return 음수면 위로, 양수면 아래로 스크롤. 휠 이벤트가 아니면 0 반환.
-     */
     public int getPreciseWheelRotation() {
         if (rawEvent instanceof MouseWheelEvent) {
             return (int) ((MouseWheelEvent) rawEvent).getPreciseWheelRotation();
@@ -86,10 +94,12 @@ public class FwMouseAPI {
     }
 
     public void consume() {
-        rawEvent.consume();
+        if (rawEvent != null) {
+            rawEvent.consume();
+        }
     }
 
     public boolean isConsumed() {
-        return rawEvent.isConsumed();
+        return rawEvent != null && rawEvent.isConsumed();
     }
 }
