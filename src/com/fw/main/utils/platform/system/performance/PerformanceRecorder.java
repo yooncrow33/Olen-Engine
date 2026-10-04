@@ -165,7 +165,7 @@ public class PerformanceRecorder {
             folder.mkdirs();
         }
 
-        File dumpFile = new File(folder, fileName+".fwB");
+        File dumpFile = new File(folder, fileName+".fwD");
         Properties prop = new Properties();
 
         synchronized (lock) {

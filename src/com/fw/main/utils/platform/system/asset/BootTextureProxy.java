@@ -19,11 +19,10 @@ public class BootTextureProxy implements Texture {
 
     @Override
     public synchronized void close() {
-        // 프록시를 닫으면 AssetManager의 정식 free 파이프라인을 태워 풀로 온전히 반환
         if (assetManager != null && key != null) {
             assetManager.free(AssetManager.AssetType.TEXTURE, key);
         }
-        this.target = null; // 타깃 참조 해제 (풀 재사용 오염 방지)
+        this.target = null;
     }
 
     @Override
