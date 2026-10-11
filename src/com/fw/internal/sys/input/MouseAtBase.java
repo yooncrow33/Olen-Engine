@@ -4,15 +4,14 @@ import com.fw.main.Base;
 import com.fw.main.utils.input.mouse.FwMouseAPI;
 import com.fw.main.utils.input.mouse.MouseInterface;
 import java.awt.event.*;
-import java.util.Queue;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class MouseAtBase implements MouseListener, MouseMotionListener, MouseWheelListener {
 
+    private final Base base;
     private MouseInterface mouseInterface = null;
-    private final Queue<FwMouseAPI> apiPool = new ConcurrentLinkedQueue<>();
 
     public MouseAtBase(Base component) {
+        this.base = component;
         component.addMouseListener(this);
         component.addMouseMotionListener(this);
         component.addMouseWheelListener(this);
@@ -27,18 +26,18 @@ public class MouseAtBase implements MouseListener, MouseMotionListener, MouseWhe
     }
 
     private void handleMouseEvent(MouseEvent e, java.util.function.Consumer<FwMouseAPI> consumer) {
+        if (!base.hasFocus()) {
+            base.requestFocusInWindow();
+        }
+
         if (this.mouseInterface == null) return;
 
-        FwMouseAPI api = apiPool.poll();
-        if (api == null) {
-            api = new FwMouseAPI();
-        }
         try {
+            FwMouseAPI api = new FwMouseAPI();
             api.setRawEvent(e);
             consumer.accept(api);
-        } finally {
-            api.clear();
-            apiPool.offer(api);
+        } catch (Throwable t) {
+            t.printStackTrace();
         }
     }
 

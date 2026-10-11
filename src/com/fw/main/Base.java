@@ -464,10 +464,26 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public class Mouse {
         final Base base;
+        private MouseInterface pendingMouseInterface;
+
         public Mouse(Base base) { this.base = base; }
         public int x() { return base.getMouseX(); }
         public int y() { return base.getMouseY(); }
-        public void registerMouseInterface(MouseInterface mouseInterface) { mouseAtBase.registerInterface(mouseInterface); }
+
+        public void registerMouseInterface(MouseInterface mouseInterface) {
+            if (base.mouseAtBase != null) {
+                base.mouseAtBase.registerInterface(mouseInterface);
+            } else {
+                this.pendingMouseInterface = mouseInterface;
+            }
+        }
+
+        void attachPendingInterface() {
+            if (pendingMouseInterface != null && base.mouseAtBase != null) {
+                base.mouseAtBase.registerInterface(pendingMouseInterface);
+                pendingMouseInterface = null;
+            }
+        }
     }
 
     public class ConsoleInit {
@@ -587,6 +603,19 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     viewMetrics.updateVirtualMouse(e.getX(), e.getY());
                 }
             }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                updateVirtual(e);
+            }
+
+            private void updateVirtual(MouseEvent e) {
+                if (renderingOption != null && renderingOption.name().equals("CRT")) {
+                    viewMetrics.updateVirtualMouseCrt(e.getX(), e.getY());
+                } else {
+                    viewMetrics.updateVirtualMouse(e.getX(), e.getY());
+                }
+            }
         });
 
         this.addComponentListener(new ComponentAdapter() {
@@ -694,6 +723,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             }));
         }
 
+        loadTasks.add(new LoadTask("Binding Input Engine...", () -> {
+            SwingUtilities.invokeAndWait(() -> {
+                this.mouseAtBase = new MouseAtBase(this);
+                this.mouse.attachPendingInterface();
+                this.requestFocus();
+            });
+        }));;
+
         new Thread(() -> {
             int total = loadTasks.size();
             if (total == 0) return;
@@ -789,7 +826,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     try {
                         handleSceneTransition();
 
-                        // 1. CPU / Logic Step
                         if (initLoadEnd.get() && !isSceneLoading.get()) {
                             long cpuStartNanos = System.nanoTime();
                             update(deltaTime);
@@ -797,7 +833,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             recordCpuPresentedFrame(System.nanoTime() - cpuStartNanos);
                         }
 
-                        // 2. GPU / Render Step (순차적 실행 및 렌더 시간 측정)
                         renderLoop();
                     } catch (Throwable t) {
                         t.printStackTrace();

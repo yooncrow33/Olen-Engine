@@ -1,12 +1,12 @@
 package com.fw.main.utils.input.mouse;
 
 public interface MouseInterface {
-    void mouseClicked(FwMouseAPI e);
-    void mousePressed(FwMouseAPI e);
-    void mouseReleased(FwMouseAPI e);
-    void mouseEntered(FwMouseAPI e);
-    void mouseExited(FwMouseAPI e);
-    void mouseWheelMoved(FwMouseAPI e);
+    default void mouseClicked(FwMouseAPI e) {}
+    default void mousePressed(FwMouseAPI e) {}
+    default void mouseReleased(FwMouseAPI e) {}
+    default void mouseEntered(FwMouseAPI e) {}
+    default void mouseExited(FwMouseAPI e) {}
+    default void mouseWheelMoved(FwMouseAPI e) {}
 
     /**
      * Invoked when a mouse button is pressed on a component and then dragged.
