@@ -38,6 +38,7 @@ public class Sprite {
         this.originalH = packed.originalH;
     }
 
+    
     public void draw(Graphics2D g, int destX, int destY, int destW, int destH) {
         VolatileImage vImg = atlas.getVolatileImage();
         if (vImg == null || destW <= 0 || destH <= 0 || originalW <= 0 || originalH <= 0) return;

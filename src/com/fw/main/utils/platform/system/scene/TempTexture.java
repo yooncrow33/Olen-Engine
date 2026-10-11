@@ -19,8 +19,16 @@ public class TempTexture {
         this.key = key;
     }
 
+    public TempTexture(BufferedImage img, String key) {
+        this.assetStream = null;
+        this.key = key;
+        this.tempImg = img;
+    }
+
     public void loadData() throws Exception {
-        tempImg = null;
+        if (this.tempImg != null) {
+            return;
+        }
 
         if (assetStream != null) {
             try (InputStream is = this.assetStream) {

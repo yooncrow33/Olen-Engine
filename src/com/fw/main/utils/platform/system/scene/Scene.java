@@ -6,6 +6,8 @@ import com.fw.main.Base;
 import com.fw.main.utils.platform.system.asset.Sound;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 
+import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.io.InputStream;
 import java.net.URL;
 import java.util.ArrayList;
@@ -52,6 +54,27 @@ public final class Scene {
             pendingSprites.put(key, proxy);
 
             return proxy;
+        }
+
+        public Sprite registerSprite(BufferedImage src, int targetW, int targetH, String key) {
+            BufferedImage resized = resizeImage(src, targetW, targetH);
+            tempTextures.add(new TempTexture(resized, key));
+
+            Sprite proxy = new Sprite(key);
+            pendingSprites.put(key, proxy);
+            return proxy;
+        }
+
+        private BufferedImage resizeImage(BufferedImage src, int targetW, int targetH) {
+            if (src.getWidth() == targetW && src.getHeight() == targetH) {
+                return src;
+            }
+            BufferedImage dst = new BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB);
+            Graphics2D g = dst.createGraphics();
+            g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+            g.drawImage(src, 0, 0, targetW, targetH, null);
+            g.dispose();
+            return dst;
         }
     }
 
