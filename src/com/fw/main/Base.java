@@ -48,7 +48,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
-    public static String version = "PRE 0.2.1";
+    public static String version = "PRE 0.2.1 in dev";
     public JFrame frame = new JFrame("Olen Engine");
 
     // --- Fullscreen and resolution states ---
@@ -67,6 +67,15 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public enum ThreadMode {
         SINGLE, DUAL
     }
+
+    public enum DrawMode {
+        DIRECT, BUFFER
+    }
+
+    private DrawMode drawMode = DrawMode.DIRECT;
+    private int bufferWidth = 1920;
+    private int bufferHeight = 1080;
+    private VolatileImage offscreenBuffer;
 
     private ThreadMode threadMode = ThreadMode.SINGLE;
     private Thread mainLoopThread;
@@ -96,7 +105,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public final Mouse getMouse() { return mouse; }
     private ViewMetrics viewMetrics;
     public final AssetManager assetManager = new AssetManager(this);
-    final Io io = new Io();
+    @Deprecated
+    @Internal
+    public final Io io = new Io();
     final OperatorManager operatorManager = new OperatorManager();
     private final AssetInit assetInit = new AssetInit(this);
     private final BaseInit baseInit = new BaseInit(this);
@@ -141,9 +152,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     private TextModule textModule;
-    private volatile MouseAtBase mouseAtBase = new MouseAtBase(this);
+    private volatile MouseAtBase mouseAtBase = null;
 
     private volatile PerformanceRecorder recorder;
+    public void setRecoderPhase(String str) {recorder.setPhase(str);}
     private boolean closeWindowWithKillVM = true;
 
     private volatile ConsoleCMD consoleCMD = null;
@@ -179,24 +191,20 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private volatile String currentLoadingMessage = "Initializing...";
     private volatile float loadingProgress = 0.0f;
 
-    /** Creates an engine. A null builder can be supplied later with {@link #setBuilder(Builder)}. */
     public Base(Builder builder) {
         if (builder != null) initializeBuilder(builder);
     }
 
-    /** Applies a builder once, before the engine is launched. */
     public synchronized void setBuilder(Builder builder) {
         if (builderInitialized) throw new IllegalStateException("builder is already initialized");
         initializeBuilder(java.util.Objects.requireNonNull(builder, "builder"));
     }
 
-    /** Applies a builder and starts the engine. */
     public void setBuilderAndLaunch(Builder builder) {
         setBuilder(builder);
         launch();
     }
 
-    /** Returns whether the builder has been applied. */
     public final boolean isBuilderInitialized() { return builderInitialized; }
 
     private void initializeBuilder(Builder builder) {
@@ -224,7 +232,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.crtJitterEnabled = builder.crtJitterEnabled;
         this.threadMode = builder.threadMode;
 
-        // Bind fullscreen and resolution options
         this.fullScreen = builder.fullScreen;
         this.changeResolution = builder.changeResolution;
         this.targetResWidth = builder.targetResWidth;
@@ -235,11 +242,21 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.WINDOW_HEIGHT = builder.virtualScreenHeight;
         this.useEngineCursor = builder.useEngineCursor;
 
+        this.drawMode = builder.drawMode;
+        this.bufferWidth = builder.bufferWidth;
+        this.bufferHeight = builder.bufferHeight;
+
+        captureMode = builder.performanceRecorderOption;
+
+        this.recorder = new PerformanceRecorder(this, this, builder.performanceRecorderOption);
+        recorder.setPhase("launch");
+
         viewMetrics = new ViewMetrics(this, Core.get().isUseIntegerPhysicalScaling(), WINDOW_WIDTH, WINDOW_HEIGHT);
 
+        if (builder.integerKey != null) { Fw.add(builder.integerKey, this); }
+        if (builder.stringKey != null) { Fw.add(builder.stringKey, this); }
+
         sysLoadStack.add(() -> {
-            if (builder.integerKey != null) { Fw.add(builder.integerKey, this); }
-            if (builder.stringKey != null) { Fw.add(builder.stringKey, this); }
             if (!builder.consoleUse) {
                 console.isNotUse();
             }
@@ -256,12 +273,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             if (console != null) { io.addIoObject("quickputsystem", console.getQuickPutManager()); }
         });
         sysLoadStack.add(() -> {
-            captureMode = builder.performanceRecorderOption;
-            if (captureMode == PerformanceRecorder.CaptureMode.DO_NOT) return;
-
-            this.recorder = new PerformanceRecorder(this, this, builder.performanceRecorderOption);
-            recorder.setPhase("launch");
-
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 recorder.exit(builder.dumpPerformanceDataFileName);
             }));
@@ -274,7 +285,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         OS_SLEEP, HYBRID, BUSY_WAIT
     }
 
-    /** Configures the base renderer and startup services. */
     public static class Builder {
         Config.Builder coreConfig;
         Config coreConfigValue;
@@ -293,13 +303,16 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         int virtualScreenHeight = 1080;
         boolean useEngineCursor = false;
 
-        // Fullscreen and resolution configuration fields
         boolean fullScreen = false;
         boolean changeResolution = false;
         int targetResWidth = -1;
         int targetResHeight = -1;
         int targetBitDepth = DisplayMode.BIT_DEPTH_MULTI;
         int targetRefreshRate = DisplayMode.REFRESH_RATE_UNKNOWN;
+
+        DrawMode drawMode = DrawMode.DIRECT;
+        int bufferWidth = 1920;
+        int bufferHeight = 1080;
 
         public Builder setCoreConfig(Config.Builder config) {
             coreConfig = java.util.Objects.requireNonNull(config); coreConfigValue = null; return this;
@@ -392,6 +405,17 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
+        public Builder setDrawMode(DrawMode drawMode) {
+            this.drawMode = java.util.Objects.requireNonNull(drawMode);
+            return this;
+        }
+
+        public Builder setBufferSize(int bufferWidth, int bufferHeight) {
+            this.bufferWidth = bufferWidth;
+            this.bufferHeight = bufferHeight;
+            return this;
+        }
+
         private void loadSavedValues() {
             consoleUse = savedBoolean("base.consoleUse", consoleUse);
             closeWindowWithKillVM = savedBoolean("base.closeWindowWithKillVM", closeWindowWithKillVM);
@@ -407,6 +431,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 virtualScreenHeight = Integer.parseInt(SettingFiles.read("base.virtualScreenHeight", String.valueOf(virtualScreenHeight)));
                 virtualScreenWidth = Integer.parseInt(SettingFiles.read("base.virtualScreenWidth", String.valueOf(virtualScreenWidth)));
                 useEngineCursor = savedBoolean("base.useEngineCursor", useEngineCursor);
+                drawMode = DrawMode.valueOf(SettingFiles.read("base.drawMode", drawMode.name()));
             } catch (NumberFormatException ignored) {}
 
             try {
@@ -421,6 +446,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             try {
                 performanceRecorderOption = PerformanceRecorder.CaptureMode.valueOf(
                         SettingFiles.read("base.performanceRecorderOption", performanceRecorderOption.name()));
+            } catch (IllegalArgumentException ignored) { }
+            try {
+                bufferWidth = Integer.parseInt(SettingFiles.read("base.bufferWidth", String.valueOf(bufferWidth)));
+                bufferHeight = Integer.parseInt(SettingFiles.read("base.bufferHeight", String.valueOf(bufferHeight)));
             } catch (IllegalArgumentException ignored) { }
             dumpPerformanceDataFileName = SettingFiles.read("base.dumpPerformanceDataFileName", dumpPerformanceDataFileName);
             if ("".equals(dumpPerformanceDataFileName)) dumpPerformanceDataFileName = null;
@@ -444,6 +473,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             SettingFiles.write("base.virtualScreenWidth", Integer.toString(virtualScreenWidth));
             SettingFiles.write("base.virtualScreenHeight", Integer.toString(virtualScreenHeight));
             SettingFiles.write("base.useEngineCursor", Boolean.toString(useEngineCursor));
+            SettingFiles.write("base.drawMode", drawMode.name());
+            SettingFiles.write("base.bufferWidth", Integer.toString(bufferWidth));
+            SettingFiles.write("base.bufferHeight", Integer.toString(bufferHeight));
         }
 
         private static boolean savedBoolean(String name, boolean fallback) {
@@ -1065,7 +1097,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             boolean loadingComplete = initLoadEnd.get();
             long frameStartNanos = System.nanoTime();
 
-            // 1. Pass 0 (Base Scene -> vramBuffer)
             do {
                 if (vramBuffer.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D vg = vramBuffer.createGraphics();
@@ -1080,7 +1111,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             if (!running.get()) return;
 
-            // 2. Pass 1 (Horizontal Curvature -> vramPass1)
             do {
                 if (vramPass1.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D p1G = vramPass1.createGraphics();
@@ -1101,7 +1131,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             if (!running.get()) return;
 
-            // 3. Final Pass (Vertical Curvature + Shaders -> BufferStrategy Canvas)
             try {
                 do {
                     Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
@@ -1150,7 +1179,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     strategy.show();
                 }
             } catch (IllegalStateException e) {
-                // BufferStrategy가 해제되었거나 윈도우가 파괴 중일 때 조용히 탈출
             }
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
@@ -1160,44 +1188,97 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         if (renderingOption.equals(RenderingOption.DEFAULT)) {
             ViewMetrics.Snapshot metrics = viewMetrics.getSnapshot();
             boolean loadingComplete = initLoadEnd.get();
-
             long frameStartNanos = System.nanoTime();
-            try {
+
+            if (drawMode == DrawMode.BUFFER) {
+                GraphicsConfiguration gc = getGraphicsConfiguration();
+                if (offscreenBuffer == null ||
+                        offscreenBuffer.getWidth() != bufferWidth ||
+                        offscreenBuffer.getHeight() != bufferHeight ||
+                        offscreenBuffer.validate(gc) == VolatileImage.IMAGE_INCOMPATIBLE) {
+                    offscreenBuffer = gc.createCompatibleVolatileImage(bufferWidth, bufferHeight, Transparency.OPAQUE);
+                }
+
                 do {
+                    if (offscreenBuffer.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
+                    Graphics2D bg = offscreenBuffer.createGraphics();
+                    try {
+                        bg.setColor(Color.BLACK);
+                        bg.fillRect(0, 0, bufferWidth, bufferHeight);
+
+                        bg.scale((double) bufferWidth / WINDOW_WIDTH, (double) bufferHeight / WINDOW_HEIGHT);
+
+                        drawCurrentFrame(bg, loadingComplete);
+                    } finally {
+                        bg.dispose();
+                    }
+                } while (running.get() && offscreenBuffer.contentsLost());
+
+                if (!running.get()) return;
+
+                int targetDrawW = (int) Math.round(WINDOW_WIDTH * metrics.currentScale());
+                int targetDrawH = (int) Math.round(WINDOW_HEIGHT * metrics.currentScale());
+
+                try {
                     do {
-                        Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
-                        try {
-                            d2.setColor(Color.BLACK);
-                            d2.fillRect(0, 0, currentWidth, currentHeight);
+                        do {
+                            Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
+                            try {
+                                d2.setColor(Color.BLACK);
+                                d2.fillRect(0, 0, currentWidth, currentHeight);
 
-                            d2.translate(
-                                    metrics.currentXOffset(),
-                                    metrics.currentYOffset()
-                            );
-                            d2.scale(
-                                    metrics.currentScale(),
-                                    metrics.currentScale()
-                            );
+                                d2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
 
-                            drawCurrentFrame(d2, loadingComplete);
-                        } finally {
-                            d2.dispose();
-                        }
-                    } while (strategy.contentsRestored());
+                                d2.drawImage(offscreenBuffer,
+                                        metrics.currentXOffset(), metrics.currentYOffset(),
+                                        targetDrawW, targetDrawH,
+                                        0, 0, bufferWidth, bufferHeight,
+                                        null);
+                            } finally {
+                                d2.dispose();
+                            }
+                        } while (strategy.contentsRestored());
+                        strategy.show();
+                    } while (strategy.contentsLost());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
 
-                    strategy.show();
-                } while (strategy.contentsLost());
-            } catch (Exception e) {
-                throw new RuntimeException(e);
+            } else {
+                try {
+                    do {
+                        do {
+                            Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
+                            try {
+                                d2.setColor(Color.BLACK);
+                                d2.fillRect(0, 0, currentWidth, currentHeight);
+
+                                d2.translate(metrics.currentXOffset(), metrics.currentYOffset());
+                                d2.scale(metrics.currentScale(), metrics.currentScale());
+
+                                drawCurrentFrame(d2, loadingComplete);
+                            } finally {
+                                d2.dispose();
+                            }
+                        } while (strategy.contentsRestored());
+
+                        strategy.show();
+                    } while (strategy.contentsLost());
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
             }
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
         } else if (renderingOption.equals(RenderingOption.LEGACY)) {
+            int targetW = (drawMode == DrawMode.BUFFER) ? bufferWidth : currentWidth;
+            int targetH = (drawMode == DrawMode.BUFFER) ? bufferHeight : currentHeight;
+
             if (vramBuffer == null ||
-                    vramBuffer.getWidth() != currentWidth ||
-                    vramBuffer.getHeight() != currentHeight ||
+                    vramBuffer.getWidth() != targetW ||
+                    vramBuffer.getHeight() != targetH ||
                     vramBuffer.validate(getGraphicsConfiguration()) == VolatileImage.IMAGE_INCOMPATIBLE) {
-                vramBuffer = getGraphicsConfiguration().createCompatibleVolatileImage(currentWidth, currentHeight);
+                vramBuffer = getGraphicsConfiguration().createCompatibleVolatileImage(targetW, targetH);
             }
 
             long frameStartNanos = System.nanoTime();
@@ -1208,10 +1289,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 Graphics2D d2 = vramBuffer.createGraphics();
                 try {
                     d2.setColor(Color.BLACK);
-                    d2.fillRect(0, 0, currentWidth, currentHeight);
+                    d2.fillRect(0, 0, targetW, targetH);
 
-                    d2.translate(viewMetrics.getCurrentXOffset(), viewMetrics.getCurrentYOffset());
-                    d2.scale(viewMetrics.getCurrentScale(), viewMetrics.getCurrentScale());
+                    if (drawMode == DrawMode.BUFFER) {
+                        d2.scale((double) bufferWidth / WINDOW_WIDTH, (double) bufferHeight / WINDOW_HEIGHT);
+                    } else {
+                        d2.translate(viewMetrics.getCurrentXOffset(), viewMetrics.getCurrentYOffset());
+                        d2.scale(viewMetrics.getCurrentScale(), viewMetrics.getCurrentScale());
+                    }
 
                     if (!initLoadEnd.get() || isSceneLoading.get()) {
                         renderLoadingScreen(d2);
@@ -1230,7 +1315,20 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
                 Graphics hwGraphics = bufferStrategy.getDrawGraphics();
                 try {
-                    hwGraphics.drawImage(vramBuffer, 0, 0, null);
+                    hwGraphics.setColor(Color.BLACK);
+                    hwGraphics.fillRect(0, 0, currentWidth, currentHeight);
+
+                    if (drawMode == DrawMode.BUFFER) {
+                        int targetDrawW = (int) Math.round(WINDOW_WIDTH * viewMetrics.getCurrentScale());
+                        int targetDrawH = (int) Math.round(WINDOW_HEIGHT * viewMetrics.getCurrentScale());
+                        hwGraphics.drawImage(vramBuffer,
+                                viewMetrics.getCurrentXOffset(), viewMetrics.getCurrentYOffset(),
+                                targetDrawW, targetDrawH,
+                                0, 0, bufferWidth, bufferHeight,
+                                null);
+                    } else {
+                        hwGraphics.drawImage(vramBuffer, 0, 0, null);
+                    }
                 } finally {
                     hwGraphics.dispose();
                 }
