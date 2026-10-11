@@ -1,11 +1,14 @@
 package com.fw.main.utils.collision;
 
+import com.fw.internal.utils.Internal;
 import com.fw.internal.utils.InternalUtils;
 import com.fw.main.Fw;
 
 import java.awt.*;
+import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class Hitbox {
     private int x,y,width,height;
@@ -17,9 +20,16 @@ public class Hitbox {
     public int getHeight() { return height; }
     public AtomicBoolean use = new AtomicBoolean(false);
     public final boolean centeringAtDynamicScaling;
-    public final UUID id = UUID.randomUUID();
+    public final Integer id = getId();
 
-    private Hitbox(Builder builder) {
+    private static final AtomicInteger ID_COUNTER = new AtomicInteger(1);
+
+    private static Integer getId() {
+        return ID_COUNTER.getAndIncrement();
+    }
+
+    @Deprecated
+    public Hitbox(Builder builder) {
         x = builder.x;
         y = builder.y;
         width = builder.width;

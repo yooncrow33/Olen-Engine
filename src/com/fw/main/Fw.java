@@ -22,8 +22,8 @@ public class Fw {
     public static class Debugger {
         public static boolean showHitbox;
         public static boolean atlasDebugger;
-        private static Map<UUID, Hitbox> hitboxMap = new ConcurrentHashMap<>();
-        private static Map<UUID, Hitbox> activeHitboxMap = new ConcurrentHashMap<>();
+        private static Map<Integer, Hitbox> hitboxMap = new ConcurrentHashMap<>();
+        private static Map<Integer, Hitbox> activeHitboxMap = new ConcurrentHashMap<>();
         static void renderHitbox(Graphics g) {
             for (Hitbox h : activeHitboxMap.values()) {
                 h.renderHitbox(g);

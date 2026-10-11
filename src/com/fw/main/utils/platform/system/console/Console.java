@@ -3,6 +3,7 @@ package com.fw.main.utils.platform.system.console;
 import com.fw.internal.utils.Internal;
 import com.fw.main.Base;
 import com.fw.main.Core;
+import com.fw.main.Fw;
 import com.fw.main.api.io.IoInterface;
 import com.fw.main.utils.graphics.RU;
 import com.fw.main.utils.input.korean.TextObject;
@@ -171,6 +172,8 @@ public class Console {
         getAuto().suggestAt(2, "1").whenToken(0).is("sys").whenToken(1).is("debug");
         getAuto().suggestAt(2, "0").whenToken(0).is("sys").whenToken(1).is("debug");
         getAuto().suggestAt(3, "screen").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(3, "hitbox").whenToken(0).is("sys").whenToken(1).is("debug");
+        getAuto().suggestAt(3, "atlas").whenToken(0).is("sys").whenToken(1).is("debug");
     }
 
     public boolean isOpen() { return isOpen; }
@@ -579,19 +582,12 @@ public class Console {
         switch (args.get(1)) {
             case "debug" -> {
                 if (args.size() < 4) {
-                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> screen");
+                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <screen|hitbox>");
                     return;
                 }
 
-                String valStr;
-                if ("screen".equalsIgnoreCase(args.get(3))) {
-                    valStr = args.get(2);
-                } else if ("screen".equalsIgnoreCase(args.get(2))) {
-                    valStr = args.get(3);
-                } else {
-                    addLog(LogType.ERROR, "target must be 'screen'!");
-                    return;
-                }
+                String valStr = args.get(2);
+                String target = args.get(3).toLowerCase();
 
                 Boolean targetState = parseBoolValue(valStr);
                 if (targetState == null) {
@@ -599,8 +595,25 @@ public class Console {
                     return;
                 }
 
-                this.showDebugScreen = targetState;
-                addLog(LogType.SYSTEM, "Debug screen set to: " + showDebugScreen);
+                switch (target) {
+                    case "screen" -> {
+                        this.showDebugScreen = targetState;
+                        addLog(LogType.SYSTEM, "Debug screen set to: " + this.showDebugScreen);
+                    }
+                    case "hitbox" -> {
+                        Fw.Debugger.showHitbox = targetState;
+                        addLog(LogType.SYSTEM, "Debug hitbox set to: " + this.text);
+                    }
+                    case "atlas" -> {
+                        Fw.Debugger.atlasDebugger = targetState;
+                        addLog(LogType.SYSTEM, "Debug atlas set to: " + this.text);
+                    }
+                    default -> {
+                        addLog(LogType.ERROR, "unknown target: " + target + " (use screen or hitbox)");
+                        return;
+                    }
+                }
+
                 text.clear();
             }
             case "up" -> {

@@ -22,7 +22,7 @@ public class DynamicIoLoadObject {
         interfaceObject = dynamicIo;
     }
 
-    public void internalLoad() {
+    void internalLoad() {
         Properties p = new Properties();
         File file = new File(fullPath);
         if (!file.exists()) {
