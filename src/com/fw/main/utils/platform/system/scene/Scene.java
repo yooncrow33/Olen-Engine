@@ -27,6 +27,7 @@ public final class Scene {
     public final String name;
     final SceneAssetRegister assetRegister;
     SceneInit sceneInit = new SceneInit(this);
+    public DO_NOT_ACCESS DO_NOT_ACCESS = new DO_NOT_ACCESS(this);
 
     public void init() throws Exception {
         assetRegister.init(sceneInit);
@@ -133,7 +134,6 @@ public final class Scene {
         }
     }
 
-    //어쩔수 없이 Base에서 리플렉션
     private synchronized void dispose() {
         for (Sfx s : soundAssetLives) {
             s.getSoundAsset().stop();
@@ -151,6 +151,16 @@ public final class Scene {
             a.free();
         }
         atlasMap.clear();
+    }
+
+    public final class DO_NOT_ACCESS {
+        private final Scene scene;
+
+        private DO_NOT_ACCESS(Scene scene) {
+            this.scene = scene;
+        }
+
+        public void dispose() {scene.dispose();}
     }
 
     /**

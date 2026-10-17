@@ -820,9 +820,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                         nextScene.init();
 
                         if (currentScene != null) {
-                            Method method = currentScene.getClass().getDeclaredMethod("dispose");
-                            method.setAccessible(true);
-                            method.invoke(currentScene);
+                            currentScene.DO_NOT_ACCESS.dispose();
                         }
 
                         currentScene = nextScene;
