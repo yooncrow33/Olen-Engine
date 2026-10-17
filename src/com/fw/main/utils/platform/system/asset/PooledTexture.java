@@ -39,6 +39,13 @@ class PooledTexture implements Texture {
 
     void setInUse(boolean use) { this.inUse = use; }
 
+
+    void initDirect(String key, BufferedImage img) {
+        this.assetKey = key;
+        this.backupImage = img;
+        this.inUse = true;
+    }
+
     void loadData() {
         if (closed) return;
 

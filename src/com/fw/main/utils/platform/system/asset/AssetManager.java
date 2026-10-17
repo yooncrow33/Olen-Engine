@@ -115,6 +115,16 @@ public class AssetManager {
         return dao;
     }
 
+    public synchronized Texture registerDirectTexture(String assetKey, BufferedImage image) {
+        if (textureActiveMap.containsKey(assetKey)) {
+            return textureActiveMap.get(assetKey);
+        }
+        PooledTexture texture = getFreeTexture();
+        texture.initDirect(assetKey, image);
+        textureActiveMap.put(assetKey, texture);
+        return texture;
+    }
+
     public synchronized Texture loadTexture(LoadMode mode, String assetKey, InputStream is, String eventKey) {
         if (is == null && !Core.get().isSafeRuntime()) {
             throw new IllegalArgumentException("InputStream cannot be null for texture assetKey: " + assetKey);
