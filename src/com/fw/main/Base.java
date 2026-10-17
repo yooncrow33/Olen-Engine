@@ -65,7 +65,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     // --- Thread modes and handles ---
     public enum ThreadMode {
-        SINGLE, DUAL
+        SINGLE,
+        @Deprecated
+        /**
+         * not support.
+         */
+                DUAL
     }
 
     public enum DrawMode {
@@ -155,7 +160,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private volatile MouseAtBase mouseAtBase = null;
 
     private volatile PerformanceRecorder recorder;
-    public void setRecoderPhase(String str) {recorder.setPhase(str);}
+    public void setRecoderPhase(String str) { recorder.setPhase(str); }
     private boolean closeWindowWithKillVM = true;
 
     private volatile ConsoleCMD consoleCMD = null;
@@ -704,8 +709,18 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         return candidate;
     }
 
+    private void initInputEngine() {
+        this.mouseAtBase = new MouseAtBase(this);
+        this.mouse.attachPendingInterface();
+        this.requestFocus();
+    }
+
     private void startAsyncLoading() {
         loadTasks.clear();
+
+        loadTasks.add(new LoadTask("Initializing Core System...", () -> {
+            init(baseInit);
+        }));
 
         for (DynamicAsset dynamicAsset : sysLoadStack) {
             loadTasks.add(new LoadTask("Configuring System...", dynamicAsset::load));
@@ -747,21 +762,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             io.load.loadEnd = true;
         }));
 
-        Scene initialScene = baseInit.initScene;
-        if (initialScene != null) {
-            loadTasks.add(new LoadTask("Initializing Scene: " + initialScene.name, () -> {
+        loadTasks.add(new LoadTask("Initializing Scene...", () -> {
+            Scene initialScene = baseInit.initScene;
+            if (initialScene != null) {
+                currentLoadingMessage = "Initializing Scene: " + initialScene.name;
                 initialScene.base = this;
                 initialScene.init();
-            }));
-        }
-
-        loadTasks.add(new LoadTask("Binding Input Engine...", () -> {
-            SwingUtilities.invokeAndWait(() -> {
-                this.mouseAtBase = new MouseAtBase(this);
-                this.mouse.attachPendingInterface();
-                this.requestFocus();
-            });
-        }));;
+            }
+        }));
 
         new Thread(() -> {
             int total = loadTasks.size();
@@ -795,8 +803,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             System.err.println("Engine launch refused: call setBuilder(...) before launch().");
             return;
         }
+
         windowSetup();
-        init(baseInit);
+        initInputEngine();
+        setUp();
+
         if (Core.get().loadingScreenTexture != null) {
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", Core.get().loadingScreenTexture, null);
         } else {
@@ -1410,6 +1421,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         return Math.abs(scale - Math.rint(scale)) > 0.000_001;
     }
 
+    public void setUp() {}
     public abstract void init(BaseInit baseInit);
     public abstract void update(double dt);
     public abstract void render(Graphics2D g);
