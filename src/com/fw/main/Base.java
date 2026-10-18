@@ -75,12 +75,19 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         DIRECT, BUFFER
     }
 
+    private final ReentrantReadWriteLock sceneLock = new ReentrantReadWriteLock();
+
+    private volatile int lastErrorHash = 0;
+    private final AtomicInteger suppressedCount = new AtomicInteger(0);
+    private volatile String lastSuppressedTitle = null;
+
     private DrawMode drawMode = DrawMode.DIRECT;
     private int bufferWidth = 1920;
     private int bufferHeight = 1080;
     private VolatileImage offscreenBuffer;
 
     private ThreadMode threadMode = ThreadMode.SINGLE;
+    public ThreadMode getThreadMode() { return threadMode; }
     private Thread mainLoopThread;
     private Thread logicThread;
     private Thread renderThread;
@@ -278,6 +285,24 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         sysLoadStack.add(() -> {
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 recorder.exit(builder.dumpPerformanceDataFileName);
+
+                if (console != null) {
+                    try {
+                        String userHome = System.getProperty("user.home");
+                        String projName = Core.get().projectName;
+                        String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+                        File logFile = new File(userHome + File.separator + "." + projName + File.separator + "logs" + File.separator + "console_" + timestamp + ".txt");
+
+                        File parent = logFile.getParentFile();
+                        if (parent != null && !parent.exists()) {
+                            parent.mkdirs();
+                        }
+
+                        console.exportLogsToTxt(logFile);
+                    } catch (Exception e) {
+                        System.err.println("Failed to execute console shutdown dump: " + e.getMessage());
+                    }
+                }
             }));
         });
         builder.saveValues();
@@ -828,11 +853,15 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     try {
                         nextScene.init();
 
-                        if (currentScene != null) {
-                            currentScene.DO_NOT_ACCESS.dispose();
+                        sceneLock.writeLock().lock();
+                        try {
+                            if (currentScene != null) {
+                                currentScene.DO_NOT_ACCESS.dispose();
+                            }
+                            currentScene = nextScene;
+                        } finally {
+                            sceneLock.writeLock().unlock();
                         }
-
-                        currentScene = nextScene;
                     } catch (Throwable t) {
                         t.printStackTrace();
                         System.err.println("Asset loading failed! Aborting engine.");
@@ -873,8 +902,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                         }
 
                         renderLoop();
+                        flushSuppressionNotice();
+                        lastErrorHash = 0;
                     } catch (Throwable t) {
-                        t.printStackTrace();
+                        logThreadException(t);
                     }
 
                     nextTick += nsPerTick;
@@ -907,8 +938,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             if (recorder != null) recorder.update();
                             recordCpuPresentedFrame(System.nanoTime() - frameStartNanos);
                         }
+                        flushSuppressionNotice();
+                        lastErrorHash = 0;
                     } catch (Throwable t) {
-                        t.printStackTrace();
+                        logThreadException(t);
                     }
 
                     nextTick += nsPerTick;
@@ -935,8 +968,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     try {
                         handleSceneTransition();
                         renderLoop();
+                        flushSuppressionNotice();
+                        lastErrorHash = 0;
                     } catch (Throwable t) {
-                        t.printStackTrace();
+                        logThreadException(t);
                     }
 
                     nextTick += nsPerTick;
@@ -1317,7 +1352,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     if (!initLoadEnd.get() || isSceneLoading.get()) {
                         renderLoadingScreen(d2);
                     } else {
-                        render(d2);
+                        sceneLock.readLock().lock();
+                        try {
+                            render(d2);
+                        } finally {
+                            sceneLock.readLock().unlock();
+                        }
                     }
 
                     if (Fw.Debugger.showHitbox) {
@@ -1360,10 +1400,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         if (!loadingComplete || !initLoadEnd.get() || isSceneLoading.get()) {
             renderLoadingScreen(d2);
         } else {
-            if (!initLoadEnd.get() || isSceneLoading.get()) {
-                renderLoadingScreen(d2);
-            } else {
+            sceneLock.readLock().lock();
+            try {
                 render(d2);
+            } finally {
+                sceneLock.readLock().unlock();
             }
         }
 
@@ -1546,6 +1587,85 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         exit(false);
     }
 
+    private void flushSuppressionNotice() {
+        int count = suppressedCount.getAndSet(0);
+        if (count > 0 && lastSuppressedTitle != null) {
+            String notice = String.format("[Engine Exception] ... identical error suppressed for %d consecutive frame(s)", count);
+            if (console != null) {
+                console.addLog(Console.LogType.ERROR, notice);
+            }
+            System.err.println(notice);
+            lastSuppressedTitle = null;
+        }
+    }
+
+    private void logThreadException(Throwable t) {
+        if (t == null) return;
+
+        if (t instanceof VirtualMachineError) {
+            String fatalMsg = "[FATAL VM ERROR] " + t.getClass().getSimpleName() + ": " + t.getMessage();
+            System.err.println(fatalMsg);
+            t.printStackTrace(System.err);
+            if (console != null) {
+                console.addLog(Console.LogType.ERROR, fatalMsg);
+            }
+            System.exit(1);
+            return;
+        }
+
+        String threadName = Thread.currentThread().getName();
+        StackTraceElement[] traces = t.getStackTrace();
+        String exType = t.getClass().getSimpleName();
+        String exMsg = (t.getMessage() != null) ? t.getMessage() : "null";
+
+        StringBuilder stackKey = new StringBuilder();
+        int depth = (traces != null) ? Math.min(traces.length, 3) : 0;
+        for (int i = 0; i < depth; i++) {
+            stackKey.append(traces[i].getClassName())
+                    .append('.')
+                    .append(traces[i].getMethodName())
+                    .append(':')
+                    .append(traces[i].getLineNumber())
+                    .append(';');
+        }
+        String rootTrace = (depth > 0) ? traces[0].toString() : "unknown-source";
+
+        int errorHash = 31 * threadName.hashCode() + exType.hashCode();
+        errorHash = 31 * errorHash + stackKey.toString().hashCode();
+
+        if (this.lastErrorHash == errorHash) {
+            int currentSuppressed = suppressedCount.incrementAndGet();
+            if (currentSuppressed % 60 == 0) {
+                String notice = String.format("[Engine Exception] ... identical error continuously suppressed (%d frames)", currentSuppressed);
+                if (console != null) {
+                    console.addLog(Console.LogType.ERROR, notice);
+                }
+                System.err.println(notice);
+            }
+            return;
+        }
+
+        flushSuppressionNotice();
+
+        this.lastErrorHash = errorHash;
+        String title = String.format("[%s] %s: %s", threadName, exType, exMsg);
+        String atLine = "    at " + rootTrace;
+        this.lastSuppressedTitle = title;
+
+        if (console != null) {
+            String[] lines = title.split("\\r?\\n");
+            for (String line : lines) {
+                if (!line.isEmpty()) {
+                    console.addLog(Console.LogType.ERROR, line);
+                }
+            }
+            console.addLog(Console.LogType.ERROR, atLine);
+        }
+
+        System.err.println("[Engine Exception] " + title + " " + atLine);
+        t.printStackTrace(System.err);
+    }
+
     private void renderLoadingScreen(Graphics g) {
         g.drawImage(logo.getVolatileImage(), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, null);
         g.setFont(loadingMessageFont);
@@ -1640,7 +1760,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     public void addErrorLog(String str) {
-        System.out.println(str);
-        console.addLog(Console.LogType.SYSTEM, str);
+        System.err.println(str);
+        console.addLog(Console.LogType.ERROR, str);
     }
 }

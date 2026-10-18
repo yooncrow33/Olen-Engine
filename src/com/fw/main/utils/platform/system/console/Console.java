@@ -295,8 +295,61 @@ public class Console {
     }
 
     public void addLog(LogType type, String message) {
-        logs.add(String.format("[%tT] %s%s", System.currentTimeMillis(), type.get(), message));
-        scrollOffset = 0;
+        if (message == null) return;
+
+        if (message.contains("\n") || message.contains("\r")) {
+            String[] splitLines = message.split("\\r?\\n");
+            for (String line : splitLines) {
+                if (!line.isEmpty()) {
+                    addLog(type, line);
+                }
+            }
+            return;
+        }
+
+        String logEntry = String.format("[%tT] %s%s", System.currentTimeMillis(), type.get(), message);
+
+        if (base != null && base.getThreadMode() == Base.ThreadMode.DUAL) {
+            synchronized (logs) {
+                logs.add(logEntry);
+                scrollOffset = 0;
+            }
+        } else {
+            logs.add(logEntry);
+            scrollOffset = 0;
+        }
+    }
+
+    public void exportLogsToTxt(java.io.File destination) {
+        if (destination == null) return;
+        try {
+            java.io.File parent = destination.getParentFile();
+            if (parent != null && !parent.exists()) {
+                parent.mkdirs();
+            }
+
+            try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
+                    new java.io.OutputStreamWriter(new java.io.FileOutputStream(destination), java.nio.charset.StandardCharsets.UTF_8))) {
+
+                // DUAL 모드 셧다운 레이스를 방지하기 위해 덤프 시에만 동기화
+                if (base != null && base.getThreadMode() == Base.ThreadMode.DUAL) {
+                    synchronized (logs) {
+                        for (String logLine : logs) {
+                            writer.write(logLine);
+                            writer.newLine();
+                        }
+                    }
+                } else {
+                    for (String logLine : logs) {
+                        writer.write(logLine);
+                        writer.newLine();
+                    }
+                }
+                writer.flush();
+            }
+        } catch (Exception e) {
+            System.err.println("[Console] Failed to dump console logs: " + e.getMessage());
+        }
     }
 
     @Internal
