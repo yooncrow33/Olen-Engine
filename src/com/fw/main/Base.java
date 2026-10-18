@@ -37,12 +37,13 @@ import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 import java.io.File;
 import java.io.InputStream;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 public abstract class Base extends Canvas implements IFrameSize, PerformanceRecorder.BaseWorkTimeProvider, AccessConsole {
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
@@ -67,10 +68,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public enum ThreadMode {
         SINGLE,
         @Deprecated
-        /**
-         * not support.
-         */
-                DUAL
+        DUAL
     }
 
     public enum DrawMode {
@@ -1106,6 +1104,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             boolean loadingComplete = initLoadEnd.get();
             long frameStartNanos = System.nanoTime();
 
+            int retry = 0;
             do {
                 if (vramBuffer.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D vg = vramBuffer.createGraphics();
@@ -1116,10 +1115,11 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } finally {
                     vg.dispose();
                 }
-            } while (running.get() && vramBuffer.contentsLost());
+            } while (running.get() && vramBuffer.contentsLost() && ++retry < 3);
 
-            if (!running.get()) return;
+            if (!running.get() || vramBuffer.contentsLost()) return;
 
+            retry = 0;
             do {
                 if (vramPass1.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                 Graphics2D p1G = vramPass1.createGraphics();
@@ -1136,11 +1136,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } finally {
                     p1G.dispose();
                 }
-            } while (running.get() && vramPass1.contentsLost());
+            } while (running.get() && vramPass1.contentsLost() && ++retry < 3);
 
-            if (!running.get()) return;
+            if (!running.get() || vramPass1.contentsLost()) return;
 
             try {
+                retry = 0;
                 do {
                     Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
                     try {
@@ -1182,7 +1183,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     } finally {
                         d2.dispose();
                     }
-                } while (running.get() && strategy.contentsRestored());
+                } while (running.get() && strategy.contentsRestored() && ++retry < 3);
 
                 if (!strategy.contentsLost()) {
                     strategy.show();
@@ -1208,6 +1209,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     offscreenBuffer = gc.createCompatibleVolatileImage(bufferWidth, bufferHeight, Transparency.OPAQUE);
                 }
 
+                int retry = 0;
                 do {
                     if (offscreenBuffer.validate(gc) == VolatileImage.IMAGE_RESTORED) {}
                     Graphics2D bg = offscreenBuffer.createGraphics();
@@ -1221,15 +1223,17 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     } finally {
                         bg.dispose();
                     }
-                } while (running.get() && offscreenBuffer.contentsLost());
+                } while (running.get() && offscreenBuffer.contentsLost() && ++retry < 3);
 
-                if (!running.get()) return;
+                if (!running.get() || offscreenBuffer.contentsLost()) return;
 
                 int targetDrawW = (int) Math.round(WINDOW_WIDTH * metrics.currentScale());
                 int targetDrawH = (int) Math.round(WINDOW_HEIGHT * metrics.currentScale());
 
                 try {
+                    int lostRetries = 0;
                     do {
+                        int restoreRetries = 0;
                         do {
                             Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
                             try {
@@ -1246,16 +1250,18 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             } finally {
                                 d2.dispose();
                             }
-                        } while (strategy.contentsRestored());
+                        } while (strategy.contentsRestored() && ++restoreRetries < 3);
                         strategy.show();
-                    } while (strategy.contentsLost());
+                    } while (strategy.contentsLost() && ++lostRetries < 3);
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    throw (e instanceof RuntimeException) ? (RuntimeException) e : new RuntimeException(e);
                 }
 
             } else {
                 try {
+                    int lostRetries = 0;
                     do {
+                        int restoreRetries = 0;
                         do {
                             Graphics2D d2 = (Graphics2D) strategy.getDrawGraphics();
                             try {
@@ -1269,12 +1275,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             } finally {
                                 d2.dispose();
                             }
-                        } while (strategy.contentsRestored());
+                        } while (strategy.contentsRestored() && ++restoreRetries < 3);
 
                         strategy.show();
-                    } while (strategy.contentsLost());
+                    } while (strategy.contentsLost() && ++lostRetries < 3);
                 } catch (Exception e) {
-                    throw new RuntimeException(e);
+                    throw (e instanceof RuntimeException) ? (RuntimeException) e : new RuntimeException(e);
                 }
             }
 
@@ -1292,6 +1298,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             long frameStartNanos = System.nanoTime();
 
+            int retry = 0;
             do {
                 if (vramBuffer.validate(getGraphicsConfiguration()) == VolatileImage.IMAGE_RESTORED) {}
 
@@ -1343,14 +1350,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 }
                 bufferStrategy.show();
 
-            } while (vramBuffer.contentsLost());
+            } while (running.get() && vramBuffer.contentsLost() && ++retry < 3);
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
         }
     }
 
     private void drawCurrentFrame(Graphics2D d2, boolean loadingComplete) {
-        if (!loadingComplete) {
+        if (!loadingComplete || !initLoadEnd.get() || isSceneLoading.get()) {
             renderLoadingScreen(d2);
         } else {
             if (!initLoadEnd.get() || isSceneLoading.get()) {
