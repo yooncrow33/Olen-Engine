@@ -2,9 +2,7 @@ package com.fw.main.utils.platform.system.console;
 
 import com.fw.internal.utils.Internal;
 import com.fw.internal.utils.InternalUtils;
-import com.fw.main.Base;
-import com.fw.main.Core;
-import com.fw.main.Fw;
+import com.fw.main.*;
 import com.fw.main.api.io.IoInterface;
 import com.fw.main.utils.graphics.RU;
 import com.fw.main.utils.input.korean.TextObject;
@@ -13,7 +11,6 @@ import com.fw.main.utils.platform.system.asset.Sound;
 import com.fw.main.utils.platform.system.asset.Texture;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 import com.fw.main.utils.platform.system.console.autoComplete.AutoCompleteManager;
-import com.fw.main.PerformanceReader;
 import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
 
 import javax.imageio.ImageIO;
@@ -152,6 +149,7 @@ public class Console {
 
                 sys.then("exe", exe -> {
                     exe.then("performanceReader");
+                    exe.then("settingEditor");
                     exe.then("testInConsole", test -> {
                         test.then("errorMessage");
                         test.then("consoleMessage");
@@ -937,8 +935,8 @@ public class Console {
                     case "performanceReader" -> {
                         new PerformanceReader().launch();
                     }
-                    case "consoleHelper" -> {
-                        //new Help();
+                    case "settingEditor" -> {
+                        new EngineSettingEditor(Core.get().getProjectName()).setVisible(true);
                     }
                     case "testInConsole" -> {
                         if (args.size() < 4) {

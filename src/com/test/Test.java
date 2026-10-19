@@ -36,7 +36,7 @@ public class Test extends Base {
 
     static {
         Core.setConfig(new
-                Config.Builder("Olen Engine"). // = folder name.
+                Config.Builder("TestFolder"). // = folder name.
                 setWindowWidth(1280).
                 setWindowHeight(720).
                 setUseKoreanModule(true).
