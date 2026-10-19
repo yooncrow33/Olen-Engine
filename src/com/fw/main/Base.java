@@ -800,7 +800,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
             for (int i = 0; i < total; i++) {
                 LoadTask task = loadTasks.get(i);
-                System.out.println(task.description);
+                addLog(task.description);
                 currentLoadingMessage = task.getDescription();
                 loadingProgress = (float) i / total;
 
@@ -835,6 +835,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", Core.get().loadingScreenTexture, null);
         } else {
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
+            assetInit.registerBootTexture("wrong", InternalUtils.getEngineResourceStream("WrongTexture.png"));
         }
 
         threadLaunch();
@@ -878,7 +879,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         running.set(true);
 
         if (threadMode == ThreadMode.SINGLE) {
-            System.out.println(InternalUtils.Time.getTimeFormate() + " / single-thread loop start");
+            addLog(InternalUtils.Time.getTimeFormate() + " / single-thread loop start");
 
             mainLoopThread = new Thread(() -> {
                 long lastTime = System.nanoTime();
@@ -918,7 +919,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             mainLoopThread.start();
 
         } else {
-            System.out.println(InternalUtils.Time.getTimeFormate() + " / logic thread start");
+            addLog(InternalUtils.Time.getTimeFormate() + " / logic thread start");
 
             logicThread = new Thread(() -> {
                 long lastTime = System.nanoTime();
@@ -953,7 +954,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             logicThread.setName("logicLoop");
             logicThread.start();
 
-            System.out.println(InternalUtils.Time.getTimeFormate() + " / render thread start");
+            addLog(InternalUtils.Time.getTimeFormate() + " / render thread start");
 
             renderThread = new Thread(() -> {
                 long lastTime = System.nanoTime();

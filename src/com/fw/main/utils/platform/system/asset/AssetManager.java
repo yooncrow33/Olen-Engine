@@ -334,7 +334,13 @@ public class AssetManager {
         }
     }
 
-    public Texture getTexture(String assetKey) { return textureActiveMap.get(assetKey); }
+    public Texture getTexture(String assetKey) {
+        Texture texture = textureActiveMap.get(assetKey);
+        if (texture==null && Core.get().isSafeRuntime()) {
+            return textureActiveMap.get("wrong");
+        }
+        return texture;
+    }
 
     public Sound getSound(String assetKey) { return soundActiveMap.get(assetKey); }
 
