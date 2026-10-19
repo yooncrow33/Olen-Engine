@@ -10,6 +10,7 @@ import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.MusicAsset;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
 import com.fw.main.utils.platform.system.console.Console;
+import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -462,5 +463,71 @@ public class AssetManager {
         public static void setGlobalVolume(double volume) {InternalSoundModule.setGlobalVolume(volume);}
         public static double getGlobalVolume() {return InternalSoundModule.getGlobalVolume();}
         public static boolean isInitialized() {return InternalSoundModule.isInitialized();}
+    }
+
+    @Internal
+    public record AssetKeyLabel(String key) implements ConsoleLabel {
+        @Override
+        public String getConsoleLabel() {
+            return key;
+        }
+    }
+
+    private List<ConsoleLabel> createKeyLabelsView(Map<String, ?> map) {
+        return new AbstractList<ConsoleLabel>() {
+            @Override
+            public ConsoleLabel get(int index) {
+                int i = 0;
+                for (String key : map.keySet()) {
+                    if (i++ == index) return new AssetKeyLabel(key);
+                }
+                throw new IndexOutOfBoundsException(index);
+            }
+
+            @Override
+            public int size() {
+                return map.size();
+            }
+
+            @Override
+            public Iterator<ConsoleLabel> iterator() {
+                Iterator<String> keyIterator = map.keySet().iterator();
+                return new Iterator<>() {
+                    @Override
+                    public boolean hasNext() {
+                        return keyIterator.hasNext();
+                    }
+
+                    @Override
+                    public ConsoleLabel next() {
+                        return new AssetKeyLabel(keyIterator.next());
+                    }
+                };
+            }
+        };
+    }
+
+    private final List<ConsoleLabel> textureLabelsView = createKeyLabelsView(textureActiveMap);
+    private final List<ConsoleLabel> soundLabelsView = createKeyLabelsView(soundActiveMap);
+    private final List<ConsoleLabel> musicLabelsView = createKeyLabelsView(musicActiveMap);
+
+    public List<ConsoleLabel> getTextureKeyLabels() {
+        return textureLabelsView;
+    }
+
+    public List<ConsoleLabel> getSoundKeyLabels() {
+        return soundLabelsView;
+    }
+
+    public List<ConsoleLabel> getMusicKeyLabels() {
+        return musicLabelsView;
+    }
+
+    public List<ConsoleLabel> getKeyLabels(AssetType type) {
+        return switch (type) {
+            case TEXTURE -> textureLabelsView;
+            case SOUND -> soundLabelsView;
+            case MUSIC -> musicLabelsView;
+        };
     }
 }

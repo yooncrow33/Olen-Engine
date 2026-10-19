@@ -1,5 +1,6 @@
 package com.fw.main.utils.platform.system.asset;
 
+import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 
 public class BootTextureProxy implements Texture {
@@ -29,6 +30,12 @@ public class BootTextureProxy implements Texture {
     public VolatileImage getVolatileImage() {
         Texture t = this.target;
         return t != null ? t.getVolatileImage() : null;
+    }
+
+    @Override
+    public BufferedImage getBufferedImage() {
+        Texture t = this.target;
+        return t != null ? t.getBufferedImage() : null;
     }
 
     @Override

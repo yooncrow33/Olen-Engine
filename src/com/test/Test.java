@@ -109,7 +109,7 @@ public class Test extends Base {
 
         init.getAssetInit().registerBootTexture("olen", IoUtils.getEngineResourceStream("Olen.png"));
 
-        init.getAssetInit().registerBootTexture("nothing", null);
+        //init.getAssetInit().registerBootTexture("nothing", null);
 
         ko.setFocused(true);
         ko.registerKoreanObjectEventListener(new TextObjectEventListener() {
@@ -184,7 +184,7 @@ public class Test extends Base {
         g.setColor(Color.CYAN);
         RU.drawStringWithCursor(g, ko, 50, 130, 5, RU.CursorPosition.BOTTOM);
 
-        g.drawImage(assetManager.getTexture("nothing").getVolatileImage(), 20,400,200,200,null);
+        //g.drawImage(assetManager.getTexture("nothing").getVolatileImage(), 20,400,200,200,null);
 
         //g.setColor(Color.black);
         //g.fillRect(0,0,1920,1080);

@@ -39,7 +39,6 @@ class PooledTexture implements Texture {
 
     void setInUse(boolean use) { this.inUse = use; }
 
-
     void initDirect(String key, BufferedImage img) {
         this.assetKey = key;
         this.backupImage = img;
@@ -108,6 +107,11 @@ class PooledTexture implements Texture {
             copyToVolatile();
         }
         return volatileImage;
+    }
+
+    @Override
+    public BufferedImage getBufferedImage() {
+        return backupImage;
     }
 
     @Override public int getWidth() { return width; }

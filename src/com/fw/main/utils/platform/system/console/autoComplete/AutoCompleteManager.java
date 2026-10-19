@@ -12,6 +12,32 @@ public class AutoCompleteManager {
         return new CandidateBuilder(tokenIndex, rule);
     }
 
+    public CandidateBuilder suggestAt(int tokenIndex, List<? extends ConsoleLabel> labelList) {
+        CandidateRule rule = new CandidateRule(() -> extractLabels(labelList));
+        ruleMap.computeIfAbsent(tokenIndex, k -> new ArrayList<>()).add(rule);
+        return new CandidateBuilder(tokenIndex, rule);
+    }
+
+    private static List<String> extractLabels(List<? extends ConsoleLabel> labelList) {
+        if (labelList == null || labelList.isEmpty()) return Collections.emptyList();
+        List<String> result = new ArrayList<>(labelList.size());
+        for (ConsoleLabel item : labelList) {
+            if (item != null && item.getConsoleLabel() != null) {
+                result.add(item.getConsoleLabel());
+            }
+        }
+        return result;
+    }
+
+    public TreeBuilder tree() {
+        return new TreeBuilder(this);
+    }
+
+    public AutoCompleteManager tree(java.util.function.Consumer<TreeBuilder> rootConsumer) {
+        rootConsumer.accept(new TreeBuilder(this));
+        return this;
+    }
+
     public static class CandidateBuilder {
         private final int tokenIndex;
         private final CandidateRule rule;
@@ -35,6 +61,18 @@ public class AutoCompleteManager {
             }
 
             public CandidateBuilder is(String expectedValue) {
+                validateIndex();
+                rule.addCondition(new Condition(conditionIndex, expectedValue));
+                return parent;
+            }
+
+            public CandidateBuilder is(List<? extends ConsoleLabel> labelList) {
+                validateIndex();
+                rule.addCondition(new Condition(conditionIndex, () -> extractLabels(labelList)));
+                return parent;
+            }
+
+            private void validateIndex() {
                 if (conditionIndex >= tokenIndex) {
                     System.err.println("Auto complete condition error: conditionIndex must be less than tokenIndex!");
                 }
@@ -43,19 +81,16 @@ public class AutoCompleteManager {
                         System.err.println("overlapped condition!");
                     }
                 }
-                rule.addCondition(new Condition(conditionIndex, expectedValue));
-                return parent;
             }
         }
     }
 
     private void sortCandidates(String input, List<String> candidates) {
         if (input == null || input.isEmpty()) return;
-
         candidates.sort((a, b) -> {
             int scoreA = calculateScore(input, a);
             int scoreB = calculateScore(input, b);
-            if (scoreA != scoreB) return Integer.compare(scoreB, scoreA); // 높은 점수 우선
+            if (scoreA != scoreB) return Integer.compare(scoreB, scoreA);
             return a.compareToIgnoreCase(b);
         });
     }
@@ -63,7 +98,6 @@ public class AutoCompleteManager {
     private int calculateScore(String input, String candidate) {
         if (candidate.startsWith(input)) return 1000 + (100 - candidate.length());
         if (candidate.toLowerCase().startsWith(input.toLowerCase())) return 500;
-
         if (candidate.contains(input)) return 100;
         return 0;
     }
@@ -72,20 +106,17 @@ public class AutoCompleteManager {
         int targetIndex = currentTokens.isEmpty() ? 0 : currentTokens.size() - 1;
         List<CandidateRule> rules = ruleMap.get(targetIndex);
 
-        if (rules == null || rules.isEmpty()) {
-            return Collections.emptyList();
-        }
-
-        if (currentInputToken == null || currentInputToken.isEmpty()) {
+        if (rules == null || rules.isEmpty() || currentInputToken == null || currentInputToken.isEmpty()) {
             return Collections.emptyList();
         }
 
         List<String> activeCandidates = new ArrayList<>();
-
         for (CandidateRule rule : rules) {
             if (rule.isSatisfied(currentTokens)) {
-                if (rule.getCandidateValue().toLowerCase().contains(currentInputToken.toLowerCase())) {
-                    activeCandidates.add(rule.getCandidateValue());
+                for (String val : rule.getCandidateValues()) {
+                    if (val.toLowerCase().contains(currentInputToken.toLowerCase())) {
+                        activeCandidates.add(val);
+                    }
                 }
             }
         }
@@ -105,7 +136,7 @@ public class AutoCompleteManager {
         List<String> allCandidates = new ArrayList<>();
         for (CandidateRule rule : rules) {
             if (rule.isSatisfied(currentTokens)) {
-                allCandidates.add(rule.getCandidateValue());
+                allCandidates.addAll(rule.getCandidateValues());
             }
         }
         return allCandidates;

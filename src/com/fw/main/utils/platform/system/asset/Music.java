@@ -44,14 +44,14 @@ public interface Music {
 	/**
 	 * Play this Music at the specified volume and loop if specified.
 	 * @param loop if this Music should loop
-	 * @param volume the volume to play the this Music
+	 * @param volume the volume to play this Music
 	 */
 	public void play(boolean loop, double volume);
 	
 	/**
 	 * Play this Music at the specified volume and pan, and loop if specified.
 	 * @param loop if this Music should loop
-	 * @param volume the volume to play the this Music
+	 * @param volume the volume to play this Music
 	 * @param pan the pan at which to play this Music [-1.0,1.0], values outside
 	 * the valid range will be ignored
 	 */

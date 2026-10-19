@@ -1,6 +1,7 @@
 package com.fw.main.utils.platform.system.console;
 
 import com.fw.internal.utils.Internal;
+import com.fw.internal.utils.InternalUtils;
 import com.fw.main.Base;
 import com.fw.main.Core;
 import com.fw.main.Fw;
@@ -8,13 +9,19 @@ import com.fw.main.api.io.IoInterface;
 import com.fw.main.utils.graphics.RU;
 import com.fw.main.utils.input.korean.TextObject;
 import com.fw.main.utils.input.korean.TextObjectEventListener;
+import com.fw.main.utils.platform.system.asset.Sound;
+import com.fw.main.utils.platform.system.asset.Texture;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 import com.fw.main.utils.platform.system.console.autoComplete.AutoCompleteManager;
 import com.fw.main.PerformanceReader;
+import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
 
+import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.awt.image.RenderedImage;
+import java.io.File;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,7 +34,7 @@ public class Console {
         ERROR("[Console] Error: "),
         @Internal
         /**
-         *It's use only internal option.
+         * It's use only internal option.
          */
                 SAFE_RUNTIME("[Safe_Runtime] ");
 
@@ -41,7 +48,6 @@ public class Console {
     private static final Font FONT_PROMPT = new Font("Consolas", Font.BOLD, 18);
     private static final Font FONT_SUGGEST_TOP = new Font("Consolas", Font.BOLD, 14);
     private static final Font FONT_SUGGEST_SUB = new Font("Consolas", Font.PLAIN, 14);
-    private static final Font FONT_ALL_CANDIDATES = new Font("Consolas", Font.PLAIN, 13);
 
     private static final Color COLOR_BG = new Color(10, 10, 10, 240);
     private static final Color COLOR_BORDER = new Color(240, 240, 240);
@@ -69,9 +75,12 @@ public class Console {
     private boolean isOpen = false;
     private boolean enable = true;
 
-    // 추가 필드: 자동완성 선택 인덱스 및 상시 화면 디버그 표시 여부
     private int selectedSuggestionIndex = 0;
     private boolean showDebugScreen = false;
+
+    // 명령어 히스토리 관리
+    private final List<String> commandHistory = new ArrayList<>();
+    private int historyIndex = -1;
 
     public void isNotUse() {
         enable = false;
@@ -111,69 +120,75 @@ public class Console {
 
         comp.setFocusable(true);
         initBinding();
+        rebuildAutoCompleteTree();
+    }
 
-        getAuto().suggestAt(0,"sys");
-        getAuto().suggestAt(1,"copy").whenToken(0).is("sys");
-        getAuto().suggestAt(1,"drct").whenToken(0).is("sys");
-        getAuto().suggestAt(1,"quickput").whenToken(0).is("sys");
-        getAuto().suggestAt(2,"10").whenToken(0).is("sys").
-                whenToken(1).is("copy");
-        getAuto().suggestAt(2,"10").whenToken(0).is("sys").
-                whenToken(1).is("drct");
-        getAuto().suggestAt(2,"put").whenToken(0).is("sys")
-                .whenToken(1).is("quickput");
-        getAuto().suggestAt(2,"delete").whenToken(0).is("sys")
-                .whenToken(1).is("quickput");
-        getAuto().suggestAt(3,"key").whenToken(0).is("sys")
-                .whenToken(1).is("quickput").whenToken(2).is("delete");
-        getAuto().suggestAt(3,"key").whenToken(0).is("sys")
-                .whenToken(1).is("quickput").whenToken(2).is("put");
-        getAuto().suggestAt(4,"CMD").whenToken(0).is("sys")
-                .whenToken(1).is("quickput").whenToken(2).is("put").
-                whenToken(3).is("key");
-        getAuto().suggestAt(2,"clear").whenToken(0).is("sys")
-                .whenToken(1).is("quickput");
-        getAuto().suggestAt(1,"up").whenToken(0).is("sys");
-        getAuto().suggestAt(1,"down").whenToken(0).is("sys");
-        getAuto().suggestAt(1,"gc").whenToken(0).is("sys");
-        getAuto().suggestAt(1,"getInfo").whenToken(0).is("sys");
-        getAuto().suggestAt(2,"ver").whenToken(0).is("sys").
-                whenToken(1).is("getInfo");
-        getAuto().suggestAt(3,"engine").whenToken(0).is("sys").
-                whenToken(1).is("getInfo").whenToken(2).is("ver");
-        getAuto().suggestAt(3,"sound").whenToken(0).is("sys").
-                whenToken(1).is("getInfo").whenToken(2).is("ver");
-        getAuto().suggestAt(3,"built").whenToken(0).is("sys").
-                whenToken(1).is("getInfo").whenToken(2).is("ver");
-        getAuto().suggestAt(4,"jdk").whenToken(0).is("sys").
-                whenToken(1).is("getInfo").whenToken(2).is("ver")
-                .whenToken(3).is("built");
-        getAuto().suggestAt(4,"vm").whenToken(0).is("sys").
-                whenToken(1).is("getInfo").whenToken(2).is("ver")
-                .whenToken(3).is("built");
-        getAuto().suggestAt(1,"exe").whenToken(0).is("sys");
-        getAuto().suggestAt(2,"performanceReader").whenToken(0).is("sys").
-                whenToken(1).is("exe");
-        getAuto().suggestAt(2,"testInConsole").whenToken(0).is("sys").
-                whenToken(1).is("exe");
-        getAuto().suggestAt(3,"errorMessage").whenToken(0).is("sys").
-                whenToken(1).is("exe").whenToken(2).is("testInConsole");
-        getAuto().suggestAt(3,"consoleMessage").whenToken(0).is("sys").
-                whenToken(1).is("exe").whenToken(2).is("testInConsole");
-        getAuto().suggestAt(3,"systemMessage").whenToken(0).is("sys").
-                whenToken(1).is("exe").whenToken(2).is("testInConsole");
-        getAuto().suggestAt(3,"safe_runtimeMessage").whenToken(0).is("sys").
-                whenToken(1).is("exe").whenToken(2).is("testInConsole");
+    public void rebuildAutoCompleteTree() {
+        autoCompleteManager = new AutoCompleteManager();
+        autoCompleteManager.tree(root -> {
+            root.then("sys", sys -> {
+                sys.then("copy").then("10");
+                sys.then("drct").then("10");
+                sys.then("up");
+                sys.then("down");
+                sys.then("gc");
 
-        // sys debug 자동완성 규칙 등록
-        getAuto().suggestAt(1, "debug").whenToken(0).is("sys");
-        getAuto().suggestAt(2, "true").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(2, "false").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(2, "1").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(2, "0").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(3, "screen").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(3, "hitbox").whenToken(0).is("sys").whenToken(1).is("debug");
-        getAuto().suggestAt(3, "atlas").whenToken(0).is("sys").whenToken(1).is("debug");
+                sys.then("quickput", qp -> {
+                    qp.then("clear");
+                    qp.then("delete").then("key");
+                    qp.then("put").then("key").then("CMD");
+                });
+
+                sys.then("getInfo", info -> {
+                    info.then("ver", ver -> {
+                        ver.then("engine");
+                        ver.then("sound");
+                        ver.then("built", built -> {
+                            built.then("jdk");
+                            built.then("vm");
+                        });
+                    });
+                });
+
+                sys.then("exe", exe -> {
+                    exe.then("performanceReader");
+                    exe.then("testInConsole", test -> {
+                        test.then("errorMessage");
+                        test.then("consoleMessage");
+                        test.then("systemMessage");
+                        test.then("safe_runtimeMessage");
+                    });
+                });
+
+                sys.then("debug", debug -> {
+                    debug.then(target -> {
+                        target.then("screen");
+                        target.then("hitbox");
+                        target.then("atlas");
+                    }, "true", "false");
+
+                    debug.then("asset", asset -> {
+                        asset.then("texture", tex -> {
+                            tex.then(base.assetManager.getTextureKeyLabels(), loc -> {
+                                loc.then("desktop");
+                                loc.then("projectFolder");
+                                loc.then("exeFolder");
+                            });
+                        });
+                        asset.then("sound", snd -> {
+                            snd.then(base.assetManager.getSoundKeyLabels());
+                        });
+                    });
+                });
+
+                sys.then(getQuickPutManager().getKeyLabels());
+
+                sys.then("dump");
+                sys.then("clear");
+                sys.then("mem");
+                sys.then("thread");
+            });
+        });
     }
 
     public boolean isOpen() { return isOpen; }
@@ -182,14 +197,18 @@ public class Console {
         text.setFocused(!text.isFocused());
         text.clear();
         selectedSuggestionIndex = 0;
+        historyIndex = -1;
     }
 
     public void setMaxLines(int maxLines) {
         this.maxLines = Math.max(1, maxLines);
     }
+
     public void scrollUp(int lines) {
-        int maxOffset = Math.max(0, logs.size() - maxLines);
-        scrollOffset = Math.min(scrollOffset + lines, maxOffset);
+        synchronized (logs) {
+            int maxOffset = Math.max(0, logs.size() - maxLines);
+            scrollOffset = Math.min(scrollOffset + lines, maxOffset);
+        }
     }
 
     public void scrollDown(int lines) {
@@ -220,13 +239,21 @@ public class Console {
         List<String> args = parseBuffer(input, false);
         if (args.isEmpty()) { return; }
 
+        // 명령어 히스토리 추가 (직전 명령어가 동일한 경우 중복 방지)
+        if (commandHistory.isEmpty() || !commandHistory.get(commandHistory.size() - 1).equals(input)) {
+            commandHistory.add(input);
+        }
+        historyIndex = -1;
+
         if (args.get(0) != null && args.get(0).equals("sys")) {
             internalCMD(args);
             return;
         }
 
-        logs.add(String.format("[%tT] %s%s", System.currentTimeMillis(), LogType.ROOT.get(), input));
-        scrollOffset = 0;
+        synchronized (logs) {
+            logs.add(String.format("[%tT] %s%s", System.currentTimeMillis(), LogType.ROOT.get(), input));
+            scrollOffset = 0;
+        }
         CMD(args);
         text.clear();
         selectedSuggestionIndex = 0;
@@ -309,12 +336,7 @@ public class Console {
 
         String logEntry = String.format("[%tT] %s%s", System.currentTimeMillis(), type.get(), message);
 
-        if (base != null && base.getThreadMode() == Base.ThreadMode.DUAL) {
-            synchronized (logs) {
-                logs.add(logEntry);
-                scrollOffset = 0;
-            }
-        } else {
+        synchronized (logs) {
             logs.add(logEntry);
             scrollOffset = 0;
         }
@@ -331,15 +353,7 @@ public class Console {
             try (java.io.BufferedWriter writer = new java.io.BufferedWriter(
                     new java.io.OutputStreamWriter(new java.io.FileOutputStream(destination), java.nio.charset.StandardCharsets.UTF_8))) {
 
-                // DUAL 모드 셧다운 레이스를 방지하기 위해 덤프 시에만 동기화
-                if (base != null && base.getThreadMode() == Base.ThreadMode.DUAL) {
-                    synchronized (logs) {
-                        for (String logLine : logs) {
-                            writer.write(logLine);
-                            writer.newLine();
-                        }
-                    }
-                } else {
+                synchronized (logs) {
                     for (String logLine : logs) {
                         writer.write(logLine);
                         writer.newLine();
@@ -392,34 +406,37 @@ public class Console {
             final int availableHeight = (promptY - (int) (25 * resScale)) - startY;
             this.maxLines = Math.max(1, availableHeight / lineHeight);
 
-            int totalLogs = logs.size();
-            int endIndex = totalLogs - scrollOffset;
-            int startIndex = Math.max(0, endIndex - maxLines);
-            int lineCount = 0;
+            // 렌더링 시 logs 동기화 스냅샷 순회
+            synchronized (logs) {
+                int totalLogs = logs.size();
+                int endIndex = Math.max(0, totalLogs - scrollOffset);
+                int startIndex = Math.max(0, endIndex - maxLines);
+                int lineCount = 0;
 
-            for (int i = startIndex; i < endIndex; i++) {
-                String line = logs.get(i);
-                int currentY = startY + (lineCount * lineHeight);
+                for (int i = startIndex; i < endIndex; i++) {
+                    String line = logs.get(i);
+                    int currentY = startY + (lineCount * lineHeight);
 
-                g2.setFont(fontLog);
-                if (line.contains("Error")) g2.setColor(COLOR_LOG_ERROR);
-                else if (line.contains("[Safe_Runtime]")) g2.setColor(COLOR_LOG_SAFE_RUNTIME);
-                else if (line.contains("root:")) g2.setColor(COLOR_LOG_ROOT);
-                else if (line.contains("[System]")) g2.setColor(COLOR_LOG_SYS);
-                else g2.setColor(COLOR_LOG_DEFAULT);
+                    g2.setFont(fontLog);
+                    if (line.contains("Error")) g2.setColor(COLOR_LOG_ERROR);
+                    else if (line.contains("[Safe_Runtime]")) g2.setColor(COLOR_LOG_SAFE_RUNTIME);
+                    else if (line.contains("root:")) g2.setColor(COLOR_LOG_ROOT);
+                    else if (line.contains("[System]")) g2.setColor(COLOR_LOG_SYS);
+                    else g2.setColor(COLOR_LOG_DEFAULT);
 
-                g2.drawString(line, (int) (25 * resScale), currentY);
+                    g2.drawString(line, (int) (25 * resScale), currentY);
+
+                    g2.setFont(fontLogIndex);
+                    g2.setColor(COLOR_GRAY_TEXT);
+                    g2.drawString(String.format("#%d", i), vW - (int) (140 * resScale), currentY);
+
+                    lineCount++;
+                }
 
                 g2.setFont(fontLogIndex);
                 g2.setColor(COLOR_GRAY_TEXT);
-                g2.drawString(String.format("#%d", i), vW - (int) (140 * resScale), currentY);
-
-                lineCount++;
+                g2.drawString(String.format("Lines: %d/%d", endIndex, totalLogs), vW - (int) (110 * resScale), (int) (22 * resScale));
             }
-
-            g2.setFont(fontLogIndex);
-            g2.setColor(COLOR_GRAY_TEXT);
-            g2.drawString(String.format("Lines: %d/%d", endIndex, totalLogs), vW - (int) (110 * resScale), (int) (22 * resScale));
 
             // 프롬프트
             int promptX = (int) (25 * resScale);
@@ -471,7 +488,7 @@ public class Console {
                 }
             }
 
-            // 우측 매칭 추천 목록 (선택된 인덱스 하이라이트)
+            // 우측 매칭 추천 목록
             if (!suggestions.isEmpty()) {
                 if (selectedSuggestionIndex >= suggestions.size() || selectedSuggestionIndex < 0) {
                     selectedSuggestionIndex = 0;
@@ -551,7 +568,7 @@ public class Console {
             }
         }
 
-        // 시안색 워크타임라인 디버그 텍스트 (isOpen이거나 showDebugScreen이 켜진 경우 항상 최종 렌더링)
+        // 시안색 워크타임라인 디버그 텍스트
         g.setColor(Color.CYAN);
         g.setFont(fontWarning);
         g.drawString(String.format(
@@ -597,15 +614,30 @@ public class Console {
                             List<String> suggestions = getCurrentSuggestions();
                             if (!suggestions.isEmpty()) {
                                 selectedSuggestionIndex = (selectedSuggestionIndex - 1 + suggestions.size()) % suggestions.size();
-                                e.consume();
+                            } else if (!commandHistory.isEmpty()) {
+                                if (historyIndex == -1) {
+                                    historyIndex = commandHistory.size() - 1;
+                                } else if (historyIndex > 0) {
+                                    historyIndex--;
+                                }
+                                text.setInputText(commandHistory.get(historyIndex));
                             }
+                            e.consume();
                         }
                         case KeyEvent.VK_DOWN -> {
                             List<String> suggestions = getCurrentSuggestions();
                             if (!suggestions.isEmpty()) {
                                 selectedSuggestionIndex = (selectedSuggestionIndex + 1) % suggestions.size();
-                                e.consume();
+                            } else if (!commandHistory.isEmpty() && historyIndex != -1) {
+                                if (historyIndex < commandHistory.size() - 1) {
+                                    historyIndex++;
+                                    text.setInputText(commandHistory.get(historyIndex));
+                                } else {
+                                    historyIndex = -1;
+                                    text.clear();
+                                }
                             }
+                            e.consume();
                         }
                     }
                 }
@@ -634,8 +666,79 @@ public class Console {
 
         switch (args.get(1)) {
             case "debug" -> {
+                if (args.size() < 3) {
+                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <target> OR sys debug asset <texture|sound> ...");
+                    return;
+                }
+
+                if ("asset".equalsIgnoreCase(args.get(2))) {
+                    if (args.size() < 5) {
+                        addLog(LogType.ERROR, "usage: sys debug asset texture <key> <desktop|projectFolder|exeFolder> OR sys debug asset sound <key>");
+                        return;
+                    }
+
+                    String subType = args.get(3).toLowerCase();
+                    String assetKey = args.get(4);
+
+                    switch (subType) {
+                        case "texture" -> {
+                            if (args.size() < 6) {
+                                addLog(LogType.ERROR, "usage: sys debug asset texture <key> <desktop|projectFolder|exeFolder>");
+                                return;
+                            }
+                            String targetLoc = args.get(5).toLowerCase();
+                            Texture tex = base.assetManager.getTexture(assetKey);
+                            if (tex == null || tex.getVolatileImage() == null) {
+                                addLog(LogType.ERROR, "texture not found: " + assetKey);
+                                return;
+                            }
+
+                            File targetDir = switch (targetLoc) {
+                                case "desktop" -> new File(System.getProperty("user.home"), "Desktop");
+                                case "projectfolder" -> new File(InternalUtils.getProjectFolder());
+                                case "exefolder" -> new File(System.getProperty("user.dir"));
+                                default -> null;
+                            };
+
+                            if (targetDir == null) {
+                                addLog(LogType.ERROR, "unknown export location: " + targetLoc);
+                                return;
+                            }
+
+                            if (!targetDir.exists()) {
+                                targetDir.mkdirs();
+                            }
+
+                            String cleanFileName = assetKey.replaceAll("[^a-zA-Z0-9._-]", "_");
+                            if (!cleanFileName.toLowerCase().endsWith(".png")) {
+                                cleanFileName += ".png";
+                            }
+                            File outputFile = new File(targetDir, cleanFileName);
+
+                            try {
+                                ImageIO.write(tex.getBufferedImage(), "png", outputFile);
+                                addLog(LogType.SYSTEM, "Texture dumped to: " + outputFile.getAbsolutePath());
+                            } catch (Exception e) {
+                                addLog(LogType.ERROR, "failed to export texture: " + e.getMessage());
+                            }
+                        }
+                        case "sound" -> {
+                            Sound sound = base.assetManager.getSound(assetKey);
+                            if (sound == null) {
+                                addLog(LogType.ERROR, "sound not found: " + assetKey);
+                                return;
+                            }
+                            sound.play();
+                            addLog(LogType.SYSTEM, "Played sound: " + assetKey);
+                        }
+                        default -> addLog(LogType.ERROR, "unknown asset type: " + subType + " (use texture or sound)");
+                    }
+                    text.clear();
+                    return;
+                }
+
                 if (args.size() < 4) {
-                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <screen|hitbox>");
+                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <screen|hitbox|atlas>");
                     return;
                 }
 
@@ -655,14 +758,14 @@ public class Console {
                     }
                     case "hitbox" -> {
                         Fw.Debugger.showHitbox = targetState;
-                        addLog(LogType.SYSTEM, "Debug hitbox set to: " + this.text);
+                        addLog(LogType.SYSTEM, "Debug hitbox set to: " + targetState);
                     }
                     case "atlas" -> {
                         Fw.Debugger.atlasDebugger = targetState;
-                        addLog(LogType.SYSTEM, "Debug atlas set to: " + this.text);
+                        addLog(LogType.SYSTEM, "Debug atlas set to: " + targetState);
                     }
                     default -> {
-                        addLog(LogType.ERROR, "unknown target: " + target + " (use screen or hitbox)");
+                        addLog(LogType.ERROR, "unknown target: " + target + " (use screen, hitbox, or atlas)");
                         return;
                     }
                 }
@@ -710,15 +813,16 @@ public class Console {
                     return;
                 }
 
-                if (value < 0 || value >= logs.size()) {
-                    addLog(LogType.ERROR, "out of line range!");
-                    return;
+                synchronized (logs) {
+                    if (value < 0 || value >= logs.size()) {
+                        addLog(LogType.ERROR, "out of line range!");
+                        return;
+                    }
+
+                    int targetOffset = logs.size() - value;
+                    int maxOffset = Math.max(0, logs.size() - maxLines);
+                    scrollOffset = Math.min(targetOffset, maxOffset);
                 }
-
-                int targetOffset = logs.size() - value;
-                int maxOffset = Math.max(0, logs.size() - maxLines);
-
-                scrollOffset = Math.min(targetOffset, maxOffset);
                 text.clear();
             }
             case "copy" -> {
@@ -733,11 +837,13 @@ public class Console {
                     addLog(LogType.ERROR, "value is not a number!");
                     return;
                 }
-                if (value < 0 || value >= logs.size()) {
-                    addLog(LogType.ERROR, "out of line range!");
-                    return;
+                synchronized (logs) {
+                    if (value < 0 || value >= logs.size()) {
+                        addLog(LogType.ERROR, "out of line range!");
+                        return;
+                    }
+                    text.setInputText(logs.get(value).substring(17));
                 }
-                text.setInputText(logs.get(value).substring(17));
             }
             case "gc" -> {
                 addLog(LogType.SYSTEM,"It's legacy functions");
@@ -802,7 +908,8 @@ public class Console {
                             addLog(LogType.ERROR,"should be using \"\" !");
                             return;
                         }
-                        getQuickPutManager().map.put(args.get(3),args.get(4));
+                        getQuickPutManager().map.put(args.get(3), args.get(4));
+                        rebuildAutoCompleteTree();
                         text.clear();
                     }
                     case "delete" -> {
@@ -811,10 +918,12 @@ public class Console {
                             return;
                         }
                         getQuickPutManager().map.remove(args.get(3));
+                        rebuildAutoCompleteTree();
                         text.clear();
                     }
                     case "clear" -> {
                         getQuickPutManager().map.clear();
+                        rebuildAutoCompleteTree();
                         text.clear();
                     }
                 }
@@ -839,33 +948,68 @@ public class Console {
                         String message = "test";
 
                         switch (args.get(3)) {
-                            case "errorMessage" -> {
-                                addLog(LogType.ERROR,message);
-                            }
-                            case "consoleMessage" -> {
-                                addLog(LogType.CONSOLE,message);
-                            }
-                            case "systemMessage" -> {
-                                addLog(LogType.SYSTEM,message);
-                            }
-                            case "safe_runtimeMessage" -> {
-                                addLog(LogType.SAFE_RUNTIME,message);
-                            }
-                            default -> {
-
-                            }
+                            case "errorMessage" -> addLog(LogType.ERROR, message);
+                            case "consoleMessage" -> addLog(LogType.CONSOLE, message);
+                            case "systemMessage" -> addLog(LogType.SYSTEM, message);
+                            case "safe_runtimeMessage" -> addLog(LogType.SAFE_RUNTIME, message);
                         }
                     }
-                    default -> {
+                }
+                text.clear();
+            }
+            case "dump" -> {
+                File dumpFile;
+                if (args.size() >= 3) {
+                    dumpFile = new java.io.File(args.get(2));
+                } else {
+                    String userHome = System.getProperty("user.home");
+                    String projName = (Core.get() != null && Core.get().getProjectName() != null) ? Core.get().getProjectName() : "app";
+                    String timestamp = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss").format(new java.util.Date());
+                    dumpFile = new java.io.File(userHome + java.io.File.separator + "." + projName
+                            + java.io.File.separator + "logs" + java.io.File.separator + "console_" + timestamp + ".txt");
+                }
+                exportLogsToTxt(dumpFile);
+                addLog(LogType.SYSTEM, "Logs dumped to: " + dumpFile.getAbsolutePath());
+                text.clear();
+            }
+            case "clear" -> {
+                synchronized (logs) {
+                    logs.clear();
+                }
+                scrollOffset = 0;
+                text.clear();
+            }
+            case "mem" -> {
+                Runtime rt = Runtime.getRuntime();
+                long total = rt.totalMemory() / (1024 * 1024);
+                long free = rt.freeMemory() / (1024 * 1024);
+                long used = total - free;
+                long max = rt.maxMemory() / (1024 * 1024);
 
+                addLog(LogType.SYSTEM, String.format("Heap: %dMB / %dMB (Used: %dMB, Max: %dMB)", total, max, used, max));
+                text.clear();
+            }
+            case "thread" -> {
+                ThreadGroup tg = Thread.currentThread().getThreadGroup();
+                while (tg.getParent() != null) {
+                    tg = tg.getParent();
+                }
+
+                Thread[] active = new Thread[tg.activeCount()];
+                int count = tg.enumerate(active);
+
+                addLog(LogType.SYSTEM, "Active Threads: " + count);
+                for (int i = 0; i < count; i++) {
+                    Thread t = active[i];
+                    if (t != null && !t.isDaemon()) {
+                        addLog(LogType.CONSOLE, String.format(" - [%d] %s (%s)", t.getId(), t.getName(), t.getState()));
                     }
                 }
                 text.clear();
             }
             default -> {
                 List<Map.Entry<String, String>> entryList = new ArrayList<>(getQuickPutManager().map.entrySet());
-                for (int i = 0; i < entryList.size(); i++) {
-                    Map.Entry<String, String> entry = entryList.get(i);
+                for (Map.Entry<String, String> entry : entryList) {
                     String token = args.get(1);
                     if (token.equals(entry.getKey())) {
                         text.setInputText(entry.getValue());
@@ -879,10 +1023,52 @@ public class Console {
     public class QuickPutManager implements IoInterface {
         private Map<String, String> map = new ConcurrentHashMap<>();
 
+        private record QuickPutKeyLabel(String key) implements ConsoleLabel {
+            @Override
+            public String getConsoleLabel() {
+                return key;
+            }
+        }
+
+        private final List<ConsoleLabel> keyLabelsView = new AbstractList<ConsoleLabel>() {
+            @Override
+            public ConsoleLabel get(int index) {
+                int i = 0;
+                for (String key : map.keySet()) {
+                    if (i++ == index) return new QuickPutKeyLabel(key);
+                }
+                throw new IndexOutOfBoundsException(index);
+            }
+
+            @Override
+            public int size() {
+                return map.size();
+            }
+
+            @Override
+            public Iterator<ConsoleLabel> iterator() {
+                Iterator<String> keyIterator = map.keySet().iterator();
+                return new Iterator<>() {
+                    @Override
+                    public boolean hasNext() {
+                        return keyIterator.hasNext();
+                    }
+
+                    @Override
+                    public ConsoleLabel next() {
+                        return new QuickPutKeyLabel(keyIterator.next());
+                    }
+                };
+            }
+        };
+
+        public List<ConsoleLabel> getKeyLabels() {
+            return keyLabelsView;
+        }
+
         @Override
         public void save(Properties p) {
             List<Map.Entry<String, String>> entryList = new ArrayList<>(map.entrySet());
-
             p.setProperty("count", String.valueOf(entryList.size()));
 
             for (int i = 0; i < entryList.size(); i++) {
@@ -910,6 +1096,7 @@ public class Console {
             }
 
             this.map = loadedMap;
+            rebuildAutoCompleteTree(); // 저장 데이터 로드 후 트리 갱신
         }
 
         @Override public void initLoad(Properties p) { }
