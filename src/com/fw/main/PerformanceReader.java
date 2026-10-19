@@ -34,6 +34,7 @@ public class PerformanceReader extends Base {
                 .setUseKoreanModule(true)
                 .setUseIntegerPhysicalScaling(true)
                 .setEncryptionKey("keyforencryption")
+                .setSafeRuntime(true)
                 .setUseEncryption(false)
                 .build()
         );
@@ -45,7 +46,7 @@ public class PerformanceReader extends Base {
                 .setStringKey("1")
                 .setCrtJitterEnabled(true)
                 .setUseConsole(true)
-                .setRenderingOption(RenderingOption.CRT)
+                .setRenderingOption(RenderingOption.LEGACY)
         );
     }
 
@@ -137,12 +138,12 @@ public class PerformanceReader extends Base {
 
     @Override
     public void setMouse(Mouse mouse) {
-        // 엔진 고유의 MouseInterface만을 사용하여 완벽 구동
         mouse.registerMouseInterface(new MouseInterface() {
             @Override
             public void mouseClicked(FwMouseAPI e) {
-                int vx = toVirtualX(e.getX());
-                int vy = toVirtualY(e.getY());
+                // 정확한 마우스 가상 좌표 직접 참조
+                int vx = mouse.x();
+                int vy = mouse.y();
 
                 // 상단 메인 탭 전환
                 int startX = GRAPH_X;
@@ -154,7 +155,7 @@ public class PerformanceReader extends Base {
                     startX += 190;
                 }
 
-                // Phase 탭 및 RST CAP 버튼
+                // Phase 서브탭 및 RST CAP 버튼 처리
                 if (!tabList.isEmpty()) {
                     tabList.get(currentTab).onSubTabClick(vx, vy, GRAPH_X, GRAPH_Y, GRAPH_HEIGHT);
                 }
@@ -162,27 +163,25 @@ public class PerformanceReader extends Base {
 
             @Override
             public void mousePressed(FwMouseAPI e) {
-                lastDragVX = toVirtualX(e.getX());
-                lastDragVY = toVirtualY(e.getY());
+                lastDragVX = mouse.x();
+                lastDragVY = mouse.y();
             }
 
             @Override
-            public void mouseReleased(FwMouseAPI e) {
-            }
+            public void mouseReleased(FwMouseAPI e) {}
 
             @Override
             public void mouseDragged(FwMouseAPI e) {
                 if (tabList.isEmpty()) return;
 
-                int curVX = toVirtualX(e.getX());
-                int curVY = toVirtualY(e.getY());
+                int curVX = mouse.x();
+                int curVY = mouse.y();
 
                 int dx = curVX - lastDragVX;
                 int dy = curVY - lastDragVY;
 
                 GraphTab tab = tabList.get(currentTab);
 
-                // 엔진 API(isRightButton, isLeftButton)를 통해 드래그 중인 버튼 판별
                 if (e.isRightButton()) {
                     if (dy != 0) {
                         tab.adjustCap(dy);
@@ -203,7 +202,7 @@ public class PerformanceReader extends Base {
             @Override
             public void mouseWheelMoved(FwMouseAPI e) {
                 if (tabList.isEmpty()) return;
-                int vx = toVirtualX(e.getX());
+                int vx = getMouseX();
                 int rot = e.getWheelRotation();
 
                 if (e.isShiftDown()) {

@@ -864,7 +864,7 @@ public class Console {
                                 text.clear();
                             }
                             case "sound" -> {
-                                addLog(LogType.SYSTEM, "BeisiqTinySound: " + InternalSoundModule.VERSION);
+                                addLog(LogType.SYSTEM, "TinySound: " + InternalSoundModule.VERSION);
                                 text.clear();
                             }
                             case "built" -> {

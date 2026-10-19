@@ -25,7 +25,7 @@ public class GraphTab {
     private static final int AXIS_LEFT = 85;
     private static final int AXIS_BOTTOM = 25;
     private static final int PADDING_TOP = 25;
-    private static final int BOTTOM_UI_HEIGHT = 160;
+    private static final int BOTTOM_PHASE_AREA_HEIGHT = 100;
 
     public static class PhaseRange {
         public String name;
@@ -98,13 +98,21 @@ public class GraphTab {
     }
 
     public void render(Graphics2D g, int x, int y, int width, int height) {
+        int topAreaHeight = height - BOTTOM_PHASE_AREA_HEIGHT;
+
+        // 좌우 3:2 분할 (좌측: 그래프, 우측: 성능 정보)
+        int graphAreaW = (width * 3) / 5;
+        int sysPanelX = x + graphAreaW + 15;
+        int sysPanelW = width - graphAreaW - 15;
+
+        // 1. 좌측 그래프 영역
         int innerGraphX = x + AXIS_LEFT;
         int innerGraphY = y + PADDING_TOP;
-        int innerGraphW = width - AXIS_LEFT;
-        int innerGraphH = height - BOTTOM_UI_HEIGHT - AXIS_BOTTOM - PADDING_TOP;
+        int innerGraphW = graphAreaW - AXIS_LEFT;
+        int innerGraphH = topAreaHeight - AXIS_BOTTOM - PADDING_TOP;
 
         g.setColor(new Color(14, 14, 18));
-        g.fillRect(x, y, width, height - BOTTOM_UI_HEIGHT);
+        g.fillRect(x, y, graphAreaW, topAreaHeight);
 
         Shape oldClip = g.getClip();
         g.setClip(innerGraphX, y, innerGraphW, innerGraphH + PADDING_TOP);
@@ -117,12 +125,12 @@ public class GraphTab {
             float startScreenX = innerGraphX + offsetX + (p.startTick * zoomX);
             float endScreenX = innerGraphX + offsetX + ((p.endTick + 1) * zoomX);
 
-            g.setColor((i % 2 == 0) ? new Color(28, 30, 38) : new Color(23, 24, 30));
+            g.setColor((i % 2 == 0) ? new Color(22, 24, 30) : new Color(27, 30, 38));
             g.fillRect((int) startScreenX, innerGraphY, (int) (endScreenX - startScreenX), innerGraphH);
 
-            g.setColor(new Color(160, 175, 195));
-            g.setFont(new Font("SansSerif", Font.BOLD, 12));
-            g.drawString(p.name, startScreenX + 8, y + 16);
+            g.setColor(new Color(150, 165, 185));
+            g.setFont(new Font("SansSerif", Font.BOLD, 11));
+            g.drawString(p.name, startScreenX + 6, y + 16);
         }
 
         int tickStep = calculateOptimalTickStep(zoomX);
@@ -201,7 +209,7 @@ public class GraphTab {
             g.drawString(valStr, innerGraphX - fm.stringWidth(valStr) - 8, lineY + 4);
         }
 
-        // Y축 단위 레이블과 겹치지 않게 그래프 상단 바깥으로 분리한 CAP 초기화 버튼
+        // CAP 초기화 버튼
         boolean isCapModified = (displayMax != overallMax);
         g.setColor(isCapModified ? new Color(180, 60, 50) : new Color(35, 38, 46));
         g.fillRect(x + 2, y - 24, 76, 20);
@@ -211,7 +219,7 @@ public class GraphTab {
         g.setFont(new Font("SansSerif", Font.BOLD, 10));
         g.drawString(isCapModified ? "RST CAP *" : "CAP AUTO", x + 10, y - 10);
 
-        // X축 타임라인
+        // X축 눈금 라벨
         int bottomAxisY = innerGraphY + innerGraphH + 16;
         Shape bottomClip = g.getClip();
         g.setClip(innerGraphX, innerGraphY + innerGraphH, innerGraphW, AXIS_BOTTOM);
@@ -224,104 +232,107 @@ public class GraphTab {
         }
         g.setClip(bottomClip);
 
-        // 하단 서브탭
-        int subTabY = y + height - BOTTOM_UI_HEIGHT + 10;
-        int subTabX = x + AXIS_LEFT;
-        for (int i = 0; i < phases.size(); i++) {
-            PhaseRange p = phases.get(i);
-            int tabW = 120;
-            g.setColor(selectedPhaseIndex == i ? new Color(65, 85, 135) : new Color(38, 40, 48));
-            g.fillRect(subTabX, subTabY, tabW, 24);
-            g.setColor(selectedPhaseIndex == i ? Color.CYAN : new Color(90, 95, 110));
-            g.drawRect(subTabX, subTabY, tabW, 24);
-            g.setColor(Color.WHITE);
-            g.setFont(new Font("SansSerif", Font.PLAIN, 11));
-            g.drawString(p.name, subTabX + 8, subTabY + 16);
-            subTabX += tabW + 8;
-        }
+        // 2. 우측 성능 정보 패널 (세로 단일 열 순차 출력)
+        renderRightSideSystemInfoPanel(g, sysPanelX, y, sysPanelW, topAreaHeight);
 
-        g.setColor(Color.WHITE);
-        g.setFont(new Font("SansSerif", Font.BOLD, 12));
-        String statLine = String.format("[METRIC STATS]  Avg: %.2f  |  Max: %s  |  Min: %s  |  Current ViewCap: %s  [Drag Right-Mouse: Up/Down to Adjust Cap | Left-Mouse: Pan]",
-                overallAvg, formatValue(overallMax), formatValue(overallMin), formatValue(displayMax));
-        g.drawString(statLine, subTabX + 20, subTabY + 16);
-
-        // 하단 전체 전폭 시스템 정보 패널 (4열 그리드, 축약 없이 전체 출력)
-        renderFullSystemInfoPanel(g, x, subTabY + 30, width, BOTTOM_UI_HEIGHT - 35);
+        // 3. 하단 페이즈 잔여 영역
+        renderBottomPhaseArea(g, x, y + topAreaHeight + 10, width, BOTTOM_PHASE_AREA_HEIGHT - 10);
     }
 
-    private void renderFullSystemInfoPanel(Graphics2D g, int px, int py, int pw, int ph) {
+    private void renderRightSideSystemInfoPanel(Graphics2D g, int px, int py, int pw, int ph) {
         g.setColor(new Color(18, 20, 26));
         g.fillRoundRect(px, py, pw, ph, 8, 8);
         g.setColor(new Color(50, 55, 68));
         g.drawRoundRect(px, py, pw, ph, 8, 8);
 
         g.setColor(new Color(100, 175, 255));
-        g.setFont(new Font("SansSerif", Font.BOLD, 11));
-        g.drawString("SYSTEM, OS KERNEL, HARDWARE ARCHITECTURE & RUNTIME ENVIRONMENT METRICS", px + 14, py + 16);
+        g.setFont(new Font("SansSerif", Font.BOLD, 12));
+        g.drawString("SYSTEM ARCHITECTURE & RUNTIME SPECS", px + 14, py + 22);
 
         g.setFont(new Font("Monospaced", Font.PLAIN, 11));
         g.setColor(new Color(185, 195, 210));
 
-        int colWidth = pw / 4;
-        int col1 = px + 14;
-        int col2 = px + colWidth + 5;
-        int col3 = px + (colWidth * 2) + 5;
-        int col4 = px + (colWidth * 3) + 5;
-        int lineH = 17;
-        int startY = py + 34;
+        // 긴 가로 텍스트를 위에서 아래로 순차 출력
+        int textX = px + 14;
+        int curY = py + 46;
+        int lineH = 20;
 
-        // Col 1: OS / Host / Network
-        String osStr = sysInfoMap.getOrDefault("OS_NAME", "N/A") + " " + sysInfoMap.getOrDefault("OS_VERSION", "") + " (" + sysInfoMap.getOrDefault("OS_ARCH", "") + ")";
-        String hostStr = sysInfoMap.getOrDefault("COMPUTER_NAME", "Unknown") + " / " + sysInfoMap.getOrDefault("HOST_IP", "127.0.0.1");
-        String userStr = sysInfoMap.getOrDefault("USER_DOMAIN", "Local") + "\\" + sysInfoMap.getOrDefault("USER_NAME", "Unknown") + " (PID " + sysInfoMap.getOrDefault("PROCESS_PID", "N/A") + ")";
-        String localeStr = sysInfoMap.getOrDefault("TIMEZONE", "UTC") + " | " + sysInfoMap.getOrDefault("FILE_ENCODING", "UTF-8");
-        String netStr = "Adapters: " + sysInfoMap.getOrDefault("ACTIVE_NET_IF_COUNT", "1") + " Active | Session: " + sysInfoMap.getOrDefault("SESSION_NAME", "Console");
+        String[] infoLines = {
+                "OS       : " + sysInfoMap.getOrDefault("OS_NAME", "N/A") + " " + sysInfoMap.getOrDefault("OS_VERSION", "") + " (" + sysInfoMap.getOrDefault("OS_ARCH", "") + ")",
+                "Host / IP: " + sysInfoMap.getOrDefault("COMPUTER_NAME", "Unknown") + " / " + sysInfoMap.getOrDefault("HOST_IP", "127.0.0.1"),
+                "User / ID: " + sysInfoMap.getOrDefault("USER_DOMAIN", "Local") + "\\" + sysInfoMap.getOrDefault("USER_NAME", "Unknown") + " (PID " + sysInfoMap.getOrDefault("PROCESS_PID", "N/A") + ")",
+                "Locale   : " + sysInfoMap.getOrDefault("TIMEZONE", "UTC") + " | " + sysInfoMap.getOrDefault("FILE_ENCODING", "UTF-8"),
+                "Network  : " + sysInfoMap.getOrDefault("ACTIVE_NET_IF_COUNT", "1") + " Adapters Active | " + sysInfoMap.getOrDefault("SESSION_NAME", "Console"),
+                "CPU Spec : " + sysInfoMap.getOrDefault("CPU_CORES", "N/A") + " Cores | " + sysInfoMap.getOrDefault("PROCESSOR_ID", "Unknown"),
+                "CPU Arch : Level " + sysInfoMap.getOrDefault("PROCESSOR_LEVEL", "N/A") + " | Rev " + sysInfoMap.getOrDefault("PROCESSOR_REV", "N/A"),
+                "Phys RAM : " + formatMemStr(sysInfoMap.get("TOTAL_PHYSICAL_MEM")) + " (Free " + formatMemStr(sysInfoMap.get("FREE_PHYSICAL_MEM")) + ")",
+                "Swap Mem : " + formatMemStr(sysInfoMap.get("TOTAL_SWAP_MEM")) + " (Free " + formatMemStr(sysInfoMap.get("FREE_SWAP_MEM")) + ")",
+                "Virtual  : Committed " + formatMemStr(sysInfoMap.get("COMMITTED_VM")),
+                "JVM Spec : " + sysInfoMap.getOrDefault("JAVA_VM_NAME", "Java") + " (" + sysInfoMap.getOrDefault("JAVA_VERSION", "") + ")",
+                "JVM Heap : Max " + formatMemStr(sysInfoMap.get("JVM_MAX_MEMORY")) + " | Total " + formatMemStr(sysInfoMap.get("JVM_TOTAL_MEMORY")) + " | Free " + formatMemStr(sysInfoMap.get("JVM_FREE_MEMORY")),
+                "JIT / Up : JIT " + sysInfoMap.getOrDefault("JIT_COMPILER", "None") + " | Uptime " + sysInfoMap.getOrDefault("JVM_UPTIME", "0s"),
+                "Display  : " + sysInfoMap.getOrDefault("DISPLAY_INFO", "N/A") + " (" + sysInfoMap.getOrDefault("SCREEN_COUNT", "1") + " Displays)",
+                "Threads  : Active " + sysInfoMap.getOrDefault("THREAD_COUNT", "0") + " | Peak " + sysInfoMap.getOrDefault("PEAK_THREAD_COUNT", "0") + " | Daemon " + sysInfoMap.getOrDefault("DAEMON_THREAD_COUNT", "0"),
+                "GC Names : " + sysInfoMap.getOrDefault("GC_NAMES", "N/A"),
+                "Disks    : " + sysInfoMap.getOrDefault("DISK_VOLUMES", "N/A"),
+                "Temp Dir : " + sysInfoMap.getOrDefault("TMP_DIR", "N/A"),
+                "JVM Args : " + sysInfoMap.getOrDefault("JVM_INPUT_ARGS", "None")
+        };
 
-        g.drawString(truncate("OS     : " + osStr, 44), col1, startY);
-        g.drawString(truncate("Host/IP: " + hostStr, 44), col1, startY + lineH);
-        g.drawString(truncate("Account: " + userStr, 44), col1, startY + lineH * 2);
-        g.drawString(truncate("Network: " + netStr, 44), col1, startY + lineH * 3);
-        g.drawString(truncate("Locale : " + localeStr, 44), col1, startY + lineH * 4);
+        for (String line : infoLines) {
+            if (curY + lineH > py + ph - 8) break; // 패널 높이 초과 방지
+            g.drawString(line, textX, curY);
+            curY += lineH;
+        }
+    }
 
-        // Col 2: CPU & Memory Architecture
-        String cpuDesc = sysInfoMap.getOrDefault("CPU_CORES", "N/A") + " Cores | " + sysInfoMap.getOrDefault("PROCESSOR_ID", "Unknown");
-        String cpuRev = "Arch Level: " + sysInfoMap.getOrDefault("PROCESSOR_LEVEL", "N/A") + " | Rev: " + sysInfoMap.getOrDefault("PROCESSOR_REV", "N/A");
-        String ramStr = "Total: " + formatMemStr(sysInfoMap.get("TOTAL_PHYSICAL_MEM")) + " (Free " + formatMemStr(sysInfoMap.get("FREE_PHYSICAL_MEM")) + ")";
-        String swapStr = "Total: " + formatMemStr(sysInfoMap.get("TOTAL_SWAP_MEM")) + " (Free " + formatMemStr(sysInfoMap.get("FREE_SWAP_MEM")) + ")";
-        String vmStr = "Committed: " + formatMemStr(sysInfoMap.get("COMMITTED_VM"));
+    private void renderBottomPhaseArea(Graphics2D g, int px, int py, int pw, int ph) {
+        g.setColor(new Color(18, 20, 26));
+        g.fillRoundRect(px, py, pw, ph, 8, 8);
+        g.setColor(new Color(50, 55, 68));
+        g.drawRoundRect(px, py, pw, ph, 8, 8);
 
-        g.drawString(truncate("CPU    : " + cpuDesc, 44), col2, startY);
-        g.drawString(truncate("CPU Rev: " + cpuRev, 44), col2, startY + lineH);
-        g.drawString(truncate("RAM    : " + ramStr, 44), col2, startY + lineH * 2);
-        g.drawString(truncate("SwapMem: " + swapStr, 44), col2, startY + lineH * 3);
-        g.drawString(truncate("Virtual: " + vmStr, 44), col2, startY + lineH * 4);
+        // 상단 행: 페이즈 버튼 목록
+        int curBtnX = px + 15;
+        int btnY = py + 12;
 
-        // Col 3: JVM / Memory Pool / Display
-        String jvmStr = sysInfoMap.getOrDefault("JAVA_VM_NAME", "Java") + " (" + sysInfoMap.getOrDefault("JAVA_VERSION", "") + ")";
-        String heapStr = "Max: " + formatMemStr(sysInfoMap.get("JVM_MAX_MEMORY")) + " | Init: " + formatMemStr(sysInfoMap.get("JVM_TOTAL_MEMORY"));
-        String heapFree = "Free: " + formatMemStr(sysInfoMap.get("JVM_FREE_MEMORY")) + " | JIT: " + sysInfoMap.getOrDefault("JIT_COMPILER", "None");
-        String dispStr = sysInfoMap.getOrDefault("DISPLAY_INFO", "N/A") + " (" + sysInfoMap.getOrDefault("SCREEN_COUNT", "1") + " Displays)";
-        String uptimeStr = "Uptime: " + sysInfoMap.getOrDefault("JVM_UPTIME", "0s") + " | Patch: " + sysInfoMap.getOrDefault("OS_PATCH", "None");
+        if (phases.isEmpty()) {
+            g.setColor(Color.GRAY);
+            g.setFont(new Font("SansSerif", Font.PLAIN, 12));
+            g.drawString("No Phases Detected in Data File.", curBtnX, btnY + 18);
+        } else {
+            for (int i = 0; i < phases.size(); i++) {
+                PhaseRange p = phases.get(i);
+                int tabW = 130;
+                boolean isSelected = (selectedPhaseIndex == i);
 
-        g.drawString(truncate("JVM    : " + jvmStr, 44), col3, startY);
-        g.drawString(truncate("Heap   : " + heapStr, 44), col3, startY + lineH);
-        g.drawString(truncate("HeapMem: " + heapFree, 44), col3, startY + lineH * 2);
-        g.drawString(truncate("Display: " + dispStr, 44), col3, startY + lineH * 3);
-        g.drawString(truncate("Status : " + uptimeStr, 44), col3, startY + lineH * 4);
+                g.setColor(isSelected ? new Color(65, 85, 135) : new Color(35, 38, 48));
+                g.fillRect(curBtnX, btnY, tabW, 26);
+                g.setColor(isSelected ? Color.CYAN : new Color(80, 85, 100));
+                g.drawRect(curBtnX, btnY, tabW, 26);
 
-        // Col 4: Threads / GC / Disks
-        String threadStr = "Active: " + sysInfoMap.getOrDefault("THREAD_COUNT", "0") + " | Peak: " + sysInfoMap.getOrDefault("PEAK_THREAD_COUNT", "0") + " | Daemon: " + sysInfoMap.getOrDefault("DAEMON_THREAD_COUNT", "0");
-        String gcStr = sysInfoMap.getOrDefault("GC_NAMES", "N/A");
-        String diskStr = sysInfoMap.getOrDefault("DISK_VOLUMES", "N/A");
-        String tmpDir = "Tmp: " + sysInfoMap.getOrDefault("TMP_DIR", "N/A");
-        String jvmArgs = sysInfoMap.getOrDefault("JVM_INPUT_ARGS", "None");
+                g.setColor(Color.WHITE);
+                g.setFont(new Font("SansSerif", Font.PLAIN, 11));
+                g.drawString(p.name, curBtnX + 10, btnY + 17);
+                curBtnX += tabW + 10;
+            }
+        }
 
-        g.drawString(truncate("Threads: " + threadStr, 44), col4, startY);
-        g.drawString(truncate("GC Names: " + gcStr, 44), col4, startY + lineH);
-        g.drawString(truncate("Disks  : " + diskStr, 44), col4, startY + lineH * 2);
-        g.drawString(truncate("Temp   : " + tmpDir, 44), col4, startY + lineH * 3);
-        g.drawString(truncate("JVMArgs: " + jvmArgs, 44), col4, startY + lineH * 4);
+        // 하단 행: 통계 텍스트
+        int statTextY = py + 62;
+        g.setFont(new Font("SansSerif", Font.BOLD, 12));
+        if (selectedPhaseIndex >= 0 && selectedPhaseIndex < phases.size()) {
+            PhaseRange p = phases.get(selectedPhaseIndex);
+            g.setColor(new Color(255, 215, 0));
+            String phaseStat = String.format("[%s STATS]  Avg: %.2f  |  Max: %s (Tick %d)  |  Min: %s (Tick %d)  |  Range: Ticks %d ~ %d",
+                    p.name, p.avg, formatValue(p.max), p.maxTick, formatValue(p.min), p.minTick, p.startTick, p.endTick);
+            g.drawString(phaseStat, px + 15, statTextY);
+        } else {
+            g.setColor(Color.WHITE);
+            String statLine = String.format("[METRIC STATS]  Avg: %.2f  |  Max: %s  |  Min: %s  |  ViewCap: %s    [Controls: Drag Right-Mouse Up/Down to Adjust Cap | Drag Left-Mouse to Pan | Click Phase Above]",
+                    overallAvg, formatValue(overallMax), formatValue(overallMin), formatValue(displayMax));
+            g.drawString(statLine, px + 15, statTextY);
+        }
     }
 
     private String formatMemStr(String val) {
@@ -335,10 +346,6 @@ public class GraphTab {
         } catch (Exception e) {
             return val;
         }
-    }
-
-    private String truncate(String text, int max) {
-        return (text.length() > max) ? text.substring(0, max - 3) + "..." : text;
     }
 
     private void drawValueBadge(Graphics2D g, int x, int y, String text, boolean isMax) {
@@ -394,7 +401,8 @@ public class GraphTab {
 
     public void pan(int deltaX, int graphWidth) {
         offsetX += deltaX;
-        clampOffset(graphWidth - AXIS_LEFT);
+        int graphAreaW = (graphWidth * 3) / 5;
+        clampOffset(graphAreaW - AXIS_LEFT);
     }
 
     public void adjustCap(int deltaY) {
@@ -408,17 +416,7 @@ public class GraphTab {
         }
     }
 
-    public void onMouseWheel(FwMouseAPI e, int mouseX, int graphWidth) {
-        int rot = e.getWheelRotation();
-        if (rot == 0) return;
-
-        if (e.isShiftDown()) {
-            float factor = (rot < 0) ? 0.9f : 1.1f;
-            long currentSpan = displayMax - overallMin;
-            displayMax = overallMin + Math.max(1L, (long)(currentSpan * factor));
-            return;
-        }
-
+    public void zoom(int rot, int mouseX, int graphWidth) {
         float oldZoom = zoomX;
         if (rot < 0) {
             zoomX = Math.min(zoomX * 1.15f, 60.0f);
@@ -426,7 +424,13 @@ public class GraphTab {
             zoomX = Math.max(zoomX / 1.15f, 0.05f);
         }
         offsetX = mouseX - (mouseX - offsetX) * (zoomX / oldZoom);
-        clampOffset(graphWidth - AXIS_LEFT);
+        int graphAreaW = (graphWidth * 3) / 5;
+        clampOffset(graphAreaW - AXIS_LEFT);
+    }
+
+    public void adjustCapByFactor(float factor) {
+        long currentSpan = displayMax - overallMin;
+        displayMax = overallMin + Math.max(1L, (long) (currentSpan * factor));
     }
 
     private void clampOffset(int graphInnerWidth) {
@@ -435,7 +439,9 @@ public class GraphTab {
 
         if (totalGraphWidth <= graphInnerWidth) {
             if (offsetX > 0) offsetX = 0;
-            if (offsetX < graphInnerWidth - totalGraphWidth) offsetX = Math.max(0, graphInnerWidth - totalGraphWidth);
+            if (offsetX < graphInnerWidth - totalGraphWidth) {
+                offsetX = Math.max(0, graphInnerWidth - totalGraphWidth);
+            }
         } else {
             float minOffset = graphInnerWidth - totalGraphWidth;
             float maxOffset = 0;
@@ -445,39 +451,28 @@ public class GraphTab {
     }
 
     public void onSubTabClick(int mx, int my, int x, int y, int height) {
-        // [RST CAP] 버튼 클릭 검사 (x + 2, y - 24, w: 76, h: 20)
+        // [RST CAP] 버튼 히트박스
         if (mx >= x + 2 && mx <= x + 78 && my >= y - 24 && my <= y - 4) {
             this.displayMax = this.overallMax;
             return;
         }
 
-        int subTabY = y + height - BOTTOM_UI_HEIGHT + 10;
-        int subTabX = x + AXIS_LEFT;
+        // 하단 페이즈 버튼 히트박스
+        int topAreaHeight = height - BOTTOM_PHASE_AREA_HEIGHT;
+        int phasePanelY = y + topAreaHeight + 10;
+        int btnY = phasePanelY + 12;
 
-        for (int i = 0; i < phases.size(); i++) {
-            int tabW = 120;
-            if (mx >= subTabX && mx <= subTabX + tabW && my >= subTabY && my <= subTabY + 24) {
-                selectedPhaseIndex = (selectedPhaseIndex == i) ? -1 : i;
-                break;
+        if (my >= btnY && my <= btnY + 26) {
+            int curBtnX = x + 15;
+            for (int i = 0; i < phases.size(); i++) {
+                int tabW = 130;
+                if (mx >= curBtnX && mx <= curBtnX + tabW) {
+                    selectedPhaseIndex = (selectedPhaseIndex == i) ? -1 : i;
+                    break;
+                }
+                curBtnX += tabW + 10;
             }
-            subTabX += tabW + 8;
         }
-    }
-
-    public void zoom(int rot, int mouseX, int graphWidth) {
-        float oldZoom = zoomX;
-        if (rot < 0) {
-            zoomX = Math.min(zoomX * 1.15f, 60.0f);
-        } else {
-            zoomX = Math.max(zoomX / 1.15f, 0.05f);
-        }
-        offsetX = mouseX - (mouseX - offsetX) * (zoomX / oldZoom);
-        clampOffset(graphWidth - AXIS_LEFT);
-    }
-
-    public void adjustCapByFactor(float factor) {
-        long currentSpan = displayMax - overallMin;
-        displayMax = overallMin + Math.max(1L, (long)(currentSpan * factor));
     }
 
     public String getTitle() { return title; }

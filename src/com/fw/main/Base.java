@@ -49,7 +49,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
-    public static String version = "PRE 0.2.1 in dev";
+    public static String version = "PRE 0.3.0";
     public JFrame frame = new JFrame("Olen Engine");
 
     // --- Fullscreen and resolution states ---
