@@ -1,14 +1,19 @@
 package com.fw.main;
 
+import com.fw.internal.utils.InternalUtils;
 import com.fw.main.utils.platform.system.asset.BootTextureProxy;
 import com.fw.main.utils.platform.system.asset.Music;
 import com.fw.main.utils.platform.system.asset.Sound;
 import com.fw.main.utils.platform.system.asset.Texture;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.MusicAsset;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
+import com.fw.main.utils.platform.system.scene.Atlas;
+import com.fw.main.utils.platform.system.scene.Scene;
 
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 public final class AssetInit {
@@ -20,6 +25,28 @@ public final class AssetInit {
     final Map<String, BootSoundProxy> soundProxies = new LinkedHashMap<>();
     final Map<String, BootMusicProxy> musicProxies = new LinkedHashMap<>();
 
+    final List<BootAtlasEntry> bootAtlases = new ArrayList<>();
+
+    static final class BootAtlasEntry {
+        final String name;
+        final int padding;
+        final Scene.AtlasBinder binder;
+        final Atlas atlas;
+
+        BootAtlasEntry(String name, int padding, Scene.AtlasBinder binder, Atlas atlas) {
+            this.name = name;
+            this.padding = padding;
+            this.binder = binder;
+            this.atlas = atlas;
+        }
+    }
+
+    final Base base;
+
+    public AssetInit(Base base) {
+        this.base = base;
+    }
+
     public Texture registerBootTexture(String key, InputStream is) {
         if (key == null) throw new IllegalArgumentException("Key must not be null.");
         textureAssets.put(key, is);
@@ -27,12 +54,6 @@ public final class AssetInit {
         BootTextureProxy proxy = new BootTextureProxy(base.assetManager, key);
         textureProxies.put(key, proxy);
         return proxy;
-    }
-
-    final Base base;
-
-    public AssetInit(Base base) {
-        this.base = base;
     }
 
     public SoundAsset registerBootSound(String key, InputStream is) {
@@ -54,6 +75,23 @@ public final class AssetInit {
         return proxy;
     }
 
+    public Atlas registerBootAtlas(String name, int padding, Scene.AtlasBinderCallback callback) {
+        if (name == null || callback == null) {
+            throw new IllegalArgumentException("Atlas name and callback must not be null.");
+        }
+        Scene.AtlasBinder binder = new Scene.AtlasBinder();
+        try {
+            callback.execute(binder);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to execute boot AtlasBinderCallback for: " + name, e);
+        }
+
+        int id = InternalUtils.getRandom().nextInt();
+        Atlas atlas = Atlas.INTERNAL.createEmpty(name, base, id, binder.getPendingSprites());
+        base.assetManager.registerPersistentAtlas(name, atlas);
+        bootAtlases.add(new BootAtlasEntry(name, padding, binder, atlas));
+        return atlas;
+    }
 
     public static class BootSoundProxy extends SoundAsset {
         private volatile SoundAsset target;

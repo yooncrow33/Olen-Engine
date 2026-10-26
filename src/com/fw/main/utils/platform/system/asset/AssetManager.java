@@ -1,7 +1,6 @@
 package com.fw.main.utils.platform.system.asset;
 
 import com.fw.internal.utils.Internal;
-import com.fw.internal.utils.InternalUtils;
 import com.fw.main.Base;
 import com.fw.main.Core;
 import com.fw.main.Fw;
@@ -11,14 +10,13 @@ import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
 import com.fw.main.utils.platform.system.console.Console;
 import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
+import com.fw.main.utils.platform.system.scene.Atlas;
 
 import javax.imageio.ImageIO;
-import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.*;
-import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,6 +26,7 @@ public class AssetManager {
         SYNC,
         LAZY
     }
+
     public enum MusicType {
         MEM_MUSIC,
         STREAM_MUSIC
@@ -36,7 +35,8 @@ public class AssetManager {
     public enum AssetType {
         SOUND,
         MUSIC,
-        TEXTURE
+        TEXTURE,
+        ATLAS
     }
 
     final Base instance;
@@ -45,6 +45,7 @@ public class AssetManager {
     private final Map<String, PooledTexture> textureActiveMap = new ConcurrentHashMap<>();
     private final Map<String, SoundAsset> soundActiveMap = new ConcurrentHashMap<>();
     private final Map<String, MusicAsset> musicActiveMap = new ConcurrentHashMap<>();
+    private final Map<String, Atlas> atlasActiveMap = new ConcurrentHashMap<>();
     private final Map<String, List<DynamicAssetObject>> pendingEvents = new ConcurrentHashMap<>();
     private final Map<String, DynamicAssetObject> pendingObjects = new ConcurrentHashMap<>();
     private final Queue<DynamicAssetObject> daoFreePool = new ConcurrentLinkedQueue<>();
@@ -124,6 +125,18 @@ public class AssetManager {
         texture.initDirect(assetKey, image);
         textureActiveMap.put(assetKey, texture);
         return texture;
+    }
+
+    public synchronized void registerPersistentAtlas(String name, Atlas atlas) {
+        if (name == null || atlas == null) return;
+        Atlas old = atlasActiveMap.put(name, atlas);
+        if (old != null && old != atlas) {
+            old.DO_NOT_ACCESS.free();
+        }
+    }
+
+    public Atlas getAtlas(String name) {
+        return atlasActiveMap.get(name);
     }
 
     public synchronized Texture loadTexture(LoadMode mode, String assetKey, InputStream is, String eventKey) {
@@ -309,6 +322,7 @@ public class AssetManager {
     }
 
     private void cleanEmptyPendingEvent(String eventKey, DynamicAssetObject dao) {
+        if (eventKey == null) return;
         List<DynamicAssetObject> list = pendingEvents.get(eventKey);
         if (list != null) {
             list.remove(dao);
@@ -326,17 +340,32 @@ public class AssetManager {
     }
 
     public synchronized void event(String eventKey) {
+        launchAndSnapshotEventTasks(eventKey);
+    }
+
+    @Internal
+    public synchronized List<DynamicAssetObject> launchAndSnapshotEventTasks(String eventKey) {
         List<DynamicAssetObject> tasks = pendingEvents.remove(eventKey);
-        if (tasks != null) {
-            for (DynamicAssetObject task : tasks) {
-                task.launch();
-            }
+        if (tasks == null || tasks.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<DynamicAssetObject> snapshot = new ArrayList<>(tasks);
+        for (DynamicAssetObject task : snapshot) {
+            task.launch();
+        }
+        return snapshot;
+    }
+
+    public void eventAndAwait(String eventKey) throws InterruptedException {
+        List<DynamicAssetObject> tasks = launchAndSnapshotEventTasks(eventKey);
+        for (DynamicAssetObject task : tasks) {
+            task.awaitCompletion();
         }
     }
 
     public Texture getTexture(String assetKey) {
         Texture texture = textureActiveMap.get(assetKey);
-        if (texture==null && Core.get().isSafeRuntime()) {
+        if (texture == null && Core.get().isSafeRuntime()) {
             return textureActiveMap.get("wrong");
         }
         return texture;
@@ -402,6 +431,12 @@ public class AssetManager {
                     music.free();
                 }
             }
+            case ATLAS -> {
+                Atlas atlas = atlasActiveMap.remove(assetKey);
+                if (atlas != null) {
+                    atlas.DO_NOT_ACCESS.free();
+                }
+            }
         }
     }
 
@@ -438,6 +473,13 @@ public class AssetManager {
         }
         musicActiveMap.clear();
 
+        for (Atlas atlas : atlasActiveMap.values()) {
+            if (atlas != null) {
+                atlas.DO_NOT_ACCESS.free();
+            }
+        }
+        atlasActiveMap.clear();
+
         if (pool != null) {
             for (PooledTexture tex : pool) {
                 if (tex != null && !loadingTextures.contains(tex)) tex.close();
@@ -466,9 +508,9 @@ public class AssetManager {
     }
 
     public static class SoundAPI {
-        public static void setGlobalVolume(double volume) {InternalSoundModule.setGlobalVolume(volume);}
-        public static double getGlobalVolume() {return InternalSoundModule.getGlobalVolume();}
-        public static boolean isInitialized() {return InternalSoundModule.isInitialized();}
+        public static void setGlobalVolume(double volume) { InternalSoundModule.setGlobalVolume(volume); }
+        public static double getGlobalVolume() { return InternalSoundModule.getGlobalVolume(); }
+        public static boolean isInitialized() { return InternalSoundModule.isInitialized(); }
     }
 
     @Internal
@@ -516,6 +558,7 @@ public class AssetManager {
     private final List<ConsoleLabel> textureLabelsView = createKeyLabelsView(textureActiveMap);
     private final List<ConsoleLabel> soundLabelsView = createKeyLabelsView(soundActiveMap);
     private final List<ConsoleLabel> musicLabelsView = createKeyLabelsView(musicActiveMap);
+    private final List<ConsoleLabel> atlasLabelsView = createKeyLabelsView(atlasActiveMap);
 
     public List<ConsoleLabel> getTextureKeyLabels() {
         return textureLabelsView;
@@ -529,11 +572,16 @@ public class AssetManager {
         return musicLabelsView;
     }
 
+    public List<ConsoleLabel> getAtlasKeyLabels() {
+        return atlasLabelsView;
+    }
+
     public List<ConsoleLabel> getKeyLabels(AssetType type) {
         return switch (type) {
             case TEXTURE -> textureLabelsView;
             case SOUND -> soundLabelsView;
             case MUSIC -> musicLabelsView;
+            case ATLAS -> atlasLabelsView;
         };
     }
 }

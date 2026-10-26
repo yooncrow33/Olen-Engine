@@ -132,16 +132,16 @@ public class Test extends Base {
 
         Fw.Debugger.atlasDebugger = true;
 
-        init.setInitScene(new Scene.Builder(sceneInit -> {
-            mouseClickSound = sceneInit.registerSound(IoUtils.getGameResourceStream("rr.wav"));
-            bgm = sceneInit.registerMusic(IoUtils.getGameResourceStream("music.wav"),true);
+        // init.setInitScene(new Scene.Builder(sceneInit -> {
+        //     mouseClickSound = sceneInit.registerSound(IoUtils.getGameResourceStream("rr.wav"));
+        //     bgm = sceneInit.registerMusic(IoUtils.getGameResourceStream("music.wav"),true);
 
-            sceneInit.createAtlas("DEFAULT_ATLAS", 2, (Scene.AtlasBinderCallback) binder -> {
-                //tex1 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq.png"),"tex1");
-                //tex2 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq2.png"),"tex2");
-            });
+        //     sceneInit.createAtlas("DEFAULT_ATLAS", 2, (Scene.AtlasBinderCallback) binder -> {
+        //         //tex1 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq.png"),"tex1");
+        //         //tex2 = binder.registerSprite(IoUtils.getGameResourceStream("Beisiq2.png"),"tex2");
+        //     });
 
-        }).setName("DEFAULT").build());
+        // }).setName("DEFAULT").build());
 
 
         init.getOperatorManager().exitOperatorPack.addOperator(() -> System.out.println("exit"));

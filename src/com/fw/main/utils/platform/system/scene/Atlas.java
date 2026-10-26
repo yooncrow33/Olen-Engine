@@ -1,6 +1,7 @@
 package com.fw.main.utils.platform.system.scene;
 
 import com.fw.internal.utils.Internal;
+import com.fw.main.Base;
 import com.fw.main.Fw;
 import com.fw.main.utils.platform.system.console.Console;
 
@@ -10,6 +11,7 @@ import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,30 +23,42 @@ public class Atlas {
     private int atlasWidth, atlasHeight;
     final Map<String, Sprite> spriteMap = new ConcurrentHashMap<>();
     private final String name;
-    private boolean isFreed = false;
-    private final Scene scene;
+    private volatile boolean isFreed = false;
+    private volatile boolean isBaked = false;
+    private final Base base;
     private final int id;
 
     long totalOriginalArea = 0;
     long totalCroppedArea = 0;
 
-    //buffer
     private BufferedImage backupImage;
     private VolatileImage volatileImage;
 
-    Atlas(List<TempTexture> tempList, Map<String, Sprite> pendingSprites, int padding, String name, Scene scene, int id) throws Exception {
+    Atlas(String name, Base base, int id, Map<String, Sprite> pendingSprites) {
         this.config = GraphicsEnvironment.getLocalGraphicsEnvironment()
                 .getDefaultScreenDevice().getDefaultConfiguration();
         this.name = name;
-        this.scene = scene;
+        this.base = base;
         this.id = id;
+        if (pendingSprites != null) {
+            this.spriteMap.putAll(pendingSprites);
+        }
+    }
+
+    Atlas(List<TempTexture> tempList, Map<String, Sprite> pendingSprites, int padding, String name, Base base, int id) throws Exception {
+        this(name, base, id, pendingSprites);
+        bake(tempList, pendingSprites, padding);
+    }
+
+    synchronized void bake(List<TempTexture> tempList, Map<String, Sprite> pendingSprites, int padding) throws Exception {
+        if (isBaked || isFreed) return;
 
         if (tempList == null || tempList.isEmpty()) {
-            this.atlasWidth = 0; this.atlasHeight = 0;
+            this.atlasWidth = 0;
+            this.atlasHeight = 0;
+            this.isBaked = true;
             return;
         }
-
-
 
         List<CroppedImage> croppedList = new ArrayList<>();
         for (TempTexture input : tempList) {
@@ -76,30 +90,31 @@ public class Atlas {
         sizeConfigs.sort((a, b) -> {
             int areaCompare = Integer.compare(a.area(), b.area());
             if (areaCompare != 0) return areaCompare;
-
             return Integer.compare(Math.abs(a.w - a.h), Math.abs(b.w - b.h));
         });
 
         List<Sprite> packedSprites = null;
 
-        for (SizeConfig config : sizeConfigs) {
-            if (config.w < maxW || config.h < maxH) continue;
-            if (config.area() < totalArea / 2) continue;
+        for (SizeConfig sizeCfg : sizeConfigs) {
+            if (sizeCfg.w < maxW || sizeCfg.h < maxH) continue;
+            if (sizeCfg.area() < totalArea / 2) continue;
 
-            packedSprites = tryPack(croppedList, config.w, config.h, padding);
+            packedSprites = tryPack(croppedList, sizeCfg.w, sizeCfg.h, padding);
             if (packedSprites != null) {
-                this.atlasWidth = config.w;
-                this.atlasHeight = config.h;
-                double efficiency = (double) totalArea / (config.area()) * 100.0;
-                String logMsg = String.format("Atlas Size: %dx%d, Packing Efficiency: %.2f%%", config.w, config.h, efficiency);
-                Fw.Helper.getConsoleToBaseInstance(scene.base).addLog(Console.LogType.SYSTEM ,logMsg);
+                this.atlasWidth = sizeCfg.w;
+                this.atlasHeight = sizeCfg.h;
+                double efficiency = (double) totalArea / (sizeCfg.area()) * 100.0;
+                String logMsg = String.format("Atlas [%s] Size: %dx%d, Packing Efficiency: %.2f%%", this.name, sizeCfg.w, sizeCfg.h, efficiency);
+                if (base != null) {
+                    Fw.Helper.getConsoleToBaseInstance(base).addLog(Console.LogType.SYSTEM, logMsg);
+                }
                 break;
             }
         }
 
         if (packedSprites != null) {
             for (Sprite packed : packedSprites) {
-                Sprite userSprite = pendingSprites.get(packed.key);
+                Sprite userSprite = pendingSprites != null ? pendingSprites.get(packed.key) : null;
                 if (userSprite != null) {
                     userSprite.initData(packed);
                     this.spriteMap.put(userSprite.key, userSprite);
@@ -111,19 +126,18 @@ public class Atlas {
             throw new RuntimeException("Images exceed the maximum atlas size (" + MAX_SIZE + ").");
         }
 
-        //draw to bufferedImage.
-        backupImage = new BufferedImage(
-                getAtlasWidth(), getAtlasHeight(), BufferedImage.TYPE_INT_ARGB);
+        backupImage = new BufferedImage(getAtlasWidth(), getAtlasHeight(), BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = backupImage.createGraphics();
-
         g.setComposite(AlphaComposite.Src);
 
         for (TempTexture input : tempList) {
-            Sprite box = getSpriteMap().get(input.key);
+            Sprite box = this.spriteMap.get(input.key);
 
             String logMsg = String.format("[Key: %-12s] Orig(%4dx%4d) -> Crop(%4dx%4d) | Pos(X:%4d, Y:%4d) | TrimOffset(X:%3d, Y:%3d)",
                     box.key, box.originalW, box.originalH, box.w, box.h, box.x, box.y, box.trimX, box.trimY);
-            Fw.Helper.getConsoleToBaseInstance(scene.base).addLog(Console.LogType.SYSTEM, logMsg);
+            if (base != null) {
+                Fw.Helper.getConsoleToBaseInstance(base).addLog(Console.LogType.SYSTEM, logMsg);
+            }
 
             totalOriginalArea += (long) box.originalW * box.originalH;
             totalCroppedArea += (long) box.w * box.h;
@@ -134,7 +148,6 @@ public class Atlas {
                     box.trimX, box.trimY, box.trimX + box.w, box.trimY + box.h,
                     null
             );
-
         }
         g.dispose();
 
@@ -146,12 +159,13 @@ public class Atlas {
         }
 
         if (Fw.Debugger.atlasDebugger) {
-            File outputFile = new File(this.name+"_atlas_output.png");
+            File outputFile = new File(this.name + "_atlas_output.png");
             ImageIO.write(backupImage, "png", outputFile);
         }
+
+        this.isBaked = true;
     }
 
-    //alpha cropping
     @Internal
     public static class CroppedImage {
         String key;
@@ -161,10 +175,14 @@ public class Atlas {
         int cropW, cropH;
 
         CroppedImage(String key, BufferedImage image, int trimX, int trimY, int originalW, int originalH, int cropW, int cropH) {
-            this.key = key; this.image = image;
-            this.trimX = trimX; this.trimY = trimY;
-            this.originalW = originalW; this.originalH = originalH;
-            this.cropW = cropW; this.cropH = cropH;
+            this.key = key;
+            this.image = image;
+            this.trimX = trimX;
+            this.trimY = trimY;
+            this.originalW = originalW;
+            this.originalH = originalH;
+            this.cropW = cropW;
+            this.cropH = cropH;
         }
     }
 
@@ -198,7 +216,7 @@ public class Atlas {
             }
             if (bestFree == null) return null;
 
-            Sprite sprite = new Sprite(img.key, bestFree.x, bestFree.y, img,this);
+            Sprite sprite = new Sprite(img.key, bestFree.x, bestFree.y, img, this);
             result.add(sprite);
 
             FreeRect usedSpace = new FreeRect(bestFree.x, bestFree.y, reqW, reqH);
@@ -257,13 +275,22 @@ public class Atlas {
                 inner.y + inner.h <= outer.y + outer.h;
     }
 
+    public String getName() { return name; }
+    public int getId() { return id; }
     public int getAtlasWidth() { return atlasWidth; }
     public int getAtlasHeight() { return atlasHeight; }
-    public Map<String, Sprite> getSpriteMap() { return spriteMap; }
+
+    public Sprite getSprite(String key) {
+        return spriteMap.get(key);
+    }
+
+    public Map<String, Sprite> getSpriteMap() {
+        return Collections.unmodifiableMap(spriteMap);
+    }
 
     public float[] getUV(String key) {
-        com.fw.main.utils.platform.system.scene.Sprite sprite = spriteMap.get(key);
-        if (sprite == null) return null;
+        Sprite sprite = spriteMap.get(key);
+        if (sprite == null || atlasWidth == 0 || atlasHeight == 0) return null;
 
         return new float[]{
                 (float) sprite.x / atlasWidth,
@@ -274,12 +301,13 @@ public class Atlas {
     }
 
     private void createAndCopyVolatileImage() {
+        if (getAtlasWidth() <= 0 || getAtlasHeight() <= 0) return;
         this.volatileImage = config.createCompatibleVolatileImage(getAtlasWidth(), getAtlasHeight(), Transparency.TRANSLUCENT);
         copyToVolatile();
     }
 
     private synchronized void copyToVolatile() {
-        if (backupImage == null) return;
+        if (backupImage == null || volatileImage == null) return;
 
         Graphics2D g = volatileImage.createGraphics();
         g.setComposite(AlphaComposite.Src);
@@ -288,7 +316,7 @@ public class Atlas {
     }
 
     public VolatileImage getVolatileImage() {
-        if (isFreed) return null;
+        if (isFreed || !isBaked || getAtlasWidth() <= 0 || getAtlasHeight() <= 0) return null;
         if (volatileImage == null) {
             createAndCopyVolatileImage();
             return volatileImage;
@@ -303,7 +331,6 @@ public class Atlas {
         return volatileImage;
     }
 
-
     private CroppedImage cropAlpha(TempTexture input) {
         BufferedImage img = input.tempImg;
         int width = img.getWidth();
@@ -311,7 +338,6 @@ public class Atlas {
 
         int minX = width, minY = height, maxX = -1, maxY = -1;
 
-        // 투명하지 않은(alpha > 0) 픽셀의 Bounding Box 찾기
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 int alpha = (img.getRGB(x, y) >> 24) & 0xff;
@@ -336,7 +362,7 @@ public class Atlas {
         return new CroppedImage(input.key, cropped, minX, minY, width, height, cropW, cropH);
     }
 
-    public void free() {
+    void free() {
         isFreed = true;
 
         if (volatileImage != null) {
@@ -352,16 +378,50 @@ public class Atlas {
         spriteMap.clear();
     }
 
+    public final DO_NOT_ACCESS DO_NOT_ACCESS = new DO_NOT_ACCESS(this);
+
+    @Internal
+    public static final class DO_NOT_ACCESS {
+        private final Atlas atlas;
+
+        private DO_NOT_ACCESS(Atlas atlas) {
+            this.atlas = atlas;
+        }
+
+        public void bake(List<TempTexture> tempList, Map<String, Sprite> pendingSprites, int padding) throws Exception {
+            atlas.bake(tempList, pendingSprites, padding);
+        }
+
+        public void free() {
+            atlas.free();
+        }
+    }
+
+    @Internal
+    public static final class INTERNAL {
+        public static Atlas createEmpty(String name, Base base, int id, Map<String, Sprite> pendingSprites) {
+            return new Atlas(name, base, id, pendingSprites);
+        }
+    }
+
     private static class FreeRect {
         int x, y, w, h;
         FreeRect(int x, int y, int w, int h) {
-            this.x = x; this.y = y; this.w = w; this.h = h;
+            this.x = x;
+            this.y = y;
+            this.w = w;
+            this.h = h;
         }
     }
 
     private static class SizeConfig {
         int w, h;
-        SizeConfig(int w, int h) { this.w = w; this.h = h; }
-        int area() { return w * h; }
+        SizeConfig(int w, int h) {
+            this.w = w;
+            this.h = h;
+        }
+        int area() {
+            return w * h;
+        }
     }
 }

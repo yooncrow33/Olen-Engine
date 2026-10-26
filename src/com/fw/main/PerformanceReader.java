@@ -103,7 +103,7 @@ public class PerformanceReader extends Base {
         assetManager.mallocTexturePool(10);
         assetManager.mallocLazyLoadPool(10);
 
-        init.setInitScene(new Scene.Builder(sceneInit -> {}).setName("DEFAULT").build());
+        //init.setInitScene(new Scene.Builder(sceneInit -> {}).setName("DEFAULT").build());
 
         FileDialog dialog = new FileDialog((Frame) null, "select data(.fwD)", FileDialog.LOAD);
         dialog.setFile("*.fwD");

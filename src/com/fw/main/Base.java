@@ -1,26 +1,30 @@
 package com.fw.main;
 
 import com.fw.internal.sys.base.view.AccessConsole;
-import com.fw.internal.sys.input.MouseAtBase;
-import com.fw.internal.utils.Internal;
-import com.fw.main.api.io.Io;
-import com.fw.internal.sys.operator.OperatorManager;
 import com.fw.internal.sys.base.view.IFrameSize;
 import com.fw.internal.sys.base.view.ViewMetrics;
+import com.fw.internal.sys.input.MouseAtBase;
+import com.fw.internal.sys.operator.OperatorManager;
+import com.fw.internal.utils.DynamicAsset;
+import com.fw.internal.utils.Internal;
 import com.fw.internal.utils.InternalUtils;
+import com.fw.main.api.io.Io;
 import com.fw.main.api.sys.ConsoleCMD;
 import com.fw.main.utils.graphics.RU;
 import com.fw.main.utils.graphics.RenderingOption;
+import com.fw.main.utils.input.KeyBindingBase;
 import com.fw.main.utils.input.korean.TextModule;
+import com.fw.main.utils.input.mouse.FwMouseAPI;
 import com.fw.main.utils.input.mouse.MouseInterface;
-import com.fw.internal.utils.DynamicAsset;
 import com.fw.main.utils.platform.system.asset.*;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.MusicAsset;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.SoundAsset;
 import com.fw.main.utils.platform.system.console.Console;
 import com.fw.main.utils.platform.system.console.autoComplete.AutoCompleteManager;
+import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
 import com.fw.main.utils.platform.system.performance.PerformanceRecorder;
+import com.fw.main.utils.platform.system.scene.LoadingRenderer;
 import com.fw.main.utils.platform.system.scene.Scene;
 
 import javax.swing.*;
@@ -37,13 +41,15 @@ import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
 import java.io.File;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Map;
+import java.util.*;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Consumer;
 
 public abstract class Base extends Canvas implements IFrameSize, PerformanceRecorder.BaseWorkTimeProvider, AccessConsole {
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
@@ -64,7 +70,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private DisplayMode originalDisplayMode = null;
     private GraphicsDevice graphicsDevice = null;
 
-    // --- Thread modes and handles ---
     public enum ThreadMode {
         SINGLE,
         @Deprecated
@@ -73,6 +78,13 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public enum DrawMode {
         DIRECT, BUFFER
+    }
+
+    public enum TransitionPhase {
+        NONE,
+        TRANSITION_FADE_OUT,
+        TRANSITION_LOADING,
+        TRANSITION_FADE_IN
     }
 
     private final ReentrantReadWriteLock sceneLock = new ReentrantReadWriteLock();
@@ -123,11 +135,21 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private final BaseInit baseInit = new BaseInit(this);
     final AtomicBoolean initLoadEnd = new AtomicBoolean(false);
     final ArrayList<DynamicAsset> sysLoadStack = new ArrayList<>();
+
+    // --- Scene Management & Transition States ---
+    private final Map<String, Scene> sceneRegistry = new ConcurrentHashMap<>();
     public final AtomicBoolean isChangeScene = new AtomicBoolean(false);
     public final AtomicBoolean isSceneLoading = new AtomicBoolean(false);
+    public final AtomicBoolean isTransitioning = new AtomicBoolean(false);
+
+    private volatile TransitionPhase transitionPhase = TransitionPhase.NONE;
+    private volatile float fadeAlpha = 0.0f;
+    private float fadeSpeed = Builder.DEFAULT_FADE_SPEED;
+    private volatile LoadingRenderer loadingRenderer = null;
+
     public Scene getCurrentScene() { return currentScene; }
     volatile Scene currentScene = null;
-    volatile Scene pendingScene;
+    volatile Scene pendingScene = null;
 
     private BufferStrategy bufferStrategy;
     private VolatileImage vramBuffer;
@@ -256,6 +278,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.bufferWidth = builder.bufferWidth;
         this.bufferHeight = builder.bufferHeight;
 
+        this.fadeSpeed = builder.fadeSpeed;
+        this.loadingRenderer = builder.loadingRenderer;
+
         captureMode = builder.performanceRecorderOption;
 
         this.recorder = new PerformanceRecorder(this, this, builder.performanceRecorderOption);
@@ -314,6 +339,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     public static class Builder {
+        public static final float DEFAULT_FADE_SPEED = 2.5f;
+
         Config.Builder coreConfig;
         Config coreConfigValue;
         String stringKey;
@@ -341,6 +368,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         DrawMode drawMode = DrawMode.DIRECT;
         int bufferWidth = 1920;
         int bufferHeight = 1080;
+
+        float fadeSpeed = DEFAULT_FADE_SPEED;
+        LoadingRenderer loadingRenderer = null;
 
         public Builder setCoreConfig(Config.Builder config) {
             coreConfig = java.util.Objects.requireNonNull(config); coreConfigValue = null; return this;
@@ -444,6 +474,17 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
+        public Builder setFadeSpeed(float fadeSpeed) {
+            if (fadeSpeed <= 0.0f) throw new IllegalArgumentException("fadeSpeed must be > 0");
+            this.fadeSpeed = fadeSpeed;
+            return this;
+        }
+
+        public Builder setLoadingRenderer(LoadingRenderer loadingRenderer) {
+            this.loadingRenderer = loadingRenderer;
+            return this;
+        }
+
         private void loadSavedValues() {
             consoleUse = savedBoolean("base.consoleUse", consoleUse);
             closeWindowWithKillVM = savedBoolean("base.closeWindowWithKillVM", closeWindowWithKillVM);
@@ -479,6 +520,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 bufferWidth = Integer.parseInt(SettingFiles.read("base.bufferWidth", String.valueOf(bufferWidth)));
                 bufferHeight = Integer.parseInt(SettingFiles.read("base.bufferHeight", String.valueOf(bufferHeight)));
             } catch (IllegalArgumentException ignored) { }
+            try {
+                fadeSpeed = Float.parseFloat(SettingFiles.read("base.fadeSpeed", String.valueOf(fadeSpeed)));
+            } catch (IllegalArgumentException ignored) { }
             dumpPerformanceDataFileName = SettingFiles.read("base.dumpPerformanceDataFileName", dumpPerformanceDataFileName);
             if ("".equals(dumpPerformanceDataFileName)) dumpPerformanceDataFileName = null;
         }
@@ -504,6 +548,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             SettingFiles.write("base.drawMode", drawMode.name());
             SettingFiles.write("base.bufferWidth", Integer.toString(bufferWidth));
             SettingFiles.write("base.bufferHeight", Integer.toString(bufferHeight));
+            SettingFiles.write("base.fadeSpeed", Float.toString(fadeSpeed));
         }
 
         private static boolean savedBoolean(String name, boolean fallback) {
@@ -524,25 +569,18 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public class Mouse {
         final Base base;
-        private MouseInterface pendingMouseInterface;
+        private MouseInterface userMouseInterface;
 
         public Mouse(Base base) { this.base = base; }
         public int x() { return base.getMouseX(); }
         public int y() { return base.getMouseY(); }
 
         public void registerMouseInterface(MouseInterface mouseInterface) {
-            if (base.mouseAtBase != null) {
-                base.mouseAtBase.registerInterface(mouseInterface);
-            } else {
-                this.pendingMouseInterface = mouseInterface;
-            }
+            this.userMouseInterface = mouseInterface;
         }
 
-        void attachPendingInterface() {
-            if (pendingMouseInterface != null && base.mouseAtBase != null) {
-                base.mouseAtBase.registerInterface(pendingMouseInterface);
-                pendingMouseInterface = null;
-            }
+        MouseInterface getUserMouseInterface() {
+            return userMouseInterface;
         }
     }
 
@@ -565,7 +603,257 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         public OperatorManager getOperatorManager() { return operatorManager; }
         public AssetInit getAssetInit() { return assetInit; }
         public void initSound() { InternalSoundModule.init(); }
-        public void setInitScene(Scene initScene) { this.initScene = initScene; }
+
+        public void setInitScene(Scene initScene) {
+            if (initScene != null) {
+                initScene.DO_NOT_ACCESS.setBase(base);
+            }
+            this.initScene = initScene;
+        }
+
+        public void setInitScene(String sceneKey) {
+            Scene target = base.sceneRegistry.get(sceneKey);
+            if (target == null) {
+                throw new IllegalArgumentException("Scene key not found in registry: " + sceneKey);
+            }
+            this.initScene = target;
+        }
+    }
+
+    public synchronized void registerScene(String key, Scene scene) {
+        if (key == null || scene == null) {
+            throw new IllegalArgumentException("Scene key and Scene instance must not be null.");
+        }
+        scene.DO_NOT_ACCESS.setBase(this);
+        scene.DO_NOT_ACCESS.setName(key);
+        sceneRegistry.put(key, scene);
+    }
+
+    public Scene getRegisteredScene(String key) {
+        return sceneRegistry.get(key);
+    }
+
+    @Internal
+    public record SceneKeyLabel(String key) implements ConsoleLabel {
+        @Override
+        public String getConsoleLabel() {
+            return key;
+        }
+    }
+
+    private final List<ConsoleLabel> sceneLabelsView = new AbstractList<ConsoleLabel>() {
+        @Override
+        public ConsoleLabel get(int index) {
+            int i = 0;
+            for (String key : sceneRegistry.keySet()) {
+                if (i++ == index) return new SceneKeyLabel(key);
+            }
+            throw new IndexOutOfBoundsException(index);
+        }
+
+        @Override
+        public int size() {
+            return sceneRegistry.size();
+        }
+
+        @Override
+        public Iterator<ConsoleLabel> iterator() {
+            Iterator<String> it = sceneRegistry.keySet().iterator();
+            return new Iterator<>() {
+                @Override public boolean hasNext() { return it.hasNext(); }
+                @Override public ConsoleLabel next() { return new SceneKeyLabel(it.next()); }
+            };
+        }
+    };
+
+    public List<ConsoleLabel> getSceneKeyLabels() {
+        return sceneLabelsView;
+    }
+
+    public void setLoadingRenderer(LoadingRenderer loadingRenderer) {
+        this.loadingRenderer = loadingRenderer;
+    }
+
+    public LoadingRenderer getLoadingRenderer() {
+        return loadingRenderer;
+    }
+
+    public void setFadeSpeed(float fadeSpeed) {
+        if (fadeSpeed <= 0.0f) throw new IllegalArgumentException("fadeSpeed must be > 0");
+        this.fadeSpeed = fadeSpeed;
+    }
+
+    public float getFadeSpeed() {
+        return fadeSpeed;
+    }
+
+    public boolean isTransitioning() {
+        return isTransitioning.get();
+    }
+
+    public TransitionPhase getTransitionPhase() {
+        return transitionPhase;
+    }
+
+    protected boolean shouldBlockSceneInput() {
+        return !initLoadEnd.get() || isTransitioning.get() || isSceneLoading.get();
+    }
+
+    protected void onGlobalEscPress() {
+        Scene s = currentScene;
+        if (s != null && !shouldBlockSceneInput()) {
+            s.onKeyEscPress();
+        }
+    }
+
+    protected void onGlobalEscRelease() {
+        Scene s = currentScene;
+        if (s != null && !shouldBlockSceneInput()) {
+            s.onKeyEscRelease();
+        }
+    }
+
+    private void bindEngineKeyRouter() {
+        new KeyBindingBase(this) {
+            private void route(Consumer<Scene> action) {
+                if (shouldBlockSceneInput()) return;
+                Scene s = currentScene;
+                if (s != null) {
+                    action.accept(s);
+                }
+            }
+
+            @Override protected void onKeyEscPress() { onGlobalEscPress(); }
+            @Override protected void onKeyEscRelease() { onGlobalEscRelease(); }
+
+            @Override protected void onKeyAPress() { route(Scene::onKeyAPress); }
+            @Override protected void onKeyBPress() { route(Scene::onKeyBPress); }
+            @Override protected void onKeyCPress() { route(Scene::onKeyCPress); }
+            @Override protected void onKeyDPress() { route(Scene::onKeyDPress); }
+            @Override protected void onKeyEPress() { route(Scene::onKeyEPress); }
+            @Override protected void onKeyFPress() { route(Scene::onKeyFPress); }
+            @Override protected void onKeyGPress() { route(Scene::onKeyGPress); }
+            @Override protected void onKeyHPress() { route(Scene::onKeyHPress); }
+            @Override protected void onKeyIPress() { route(Scene::onKeyIPress); }
+            @Override protected void onKeyJPress() { route(Scene::onKeyJPress); }
+            @Override protected void onKeyKPress() { route(Scene::onKeyKPress); }
+            @Override protected void onKeyLPress() { route(Scene::onKeyLPress); }
+            @Override protected void onKeyMPress() { route(Scene::onKeyMPress); }
+            @Override protected void onKeyNPress() { route(Scene::onKeyNPress); }
+            @Override protected void onKeyOPress() { route(Scene::onKeyOPress); }
+            @Override protected void onKeyPPress() { route(Scene::onKeyPPress); }
+            @Override protected void onKeyQPress() { route(Scene::onKeyQPress); }
+            @Override protected void onKeyRPress() { route(Scene::onKeyRPress); }
+            @Override protected void onKeySPress() { route(Scene::onKeySPress); }
+            @Override protected void onKeyTPress() { route(Scene::onKeyTPress); }
+            @Override protected void onKeyUPress() { route(Scene::onKeyUPress); }
+            @Override protected void onKeyVPress() { route(Scene::onKeyVPress); }
+            @Override protected void onKeyWPress() { route(Scene::onKeyWPress); }
+            @Override protected void onKeyXPress() { route(Scene::onKeyXPress); }
+            @Override protected void onKeyYPress() { route(Scene::onKeyYPress); }
+            @Override protected void onKeyZPress() { route(Scene::onKeyZPress); }
+
+            @Override protected void onKey0Press() { route(Scene::onKey0Press); }
+            @Override protected void onKey1Press() { route(Scene::onKey1Press); }
+            @Override protected void onKey2Press() { route(Scene::onKey2Press); }
+            @Override protected void onKey3Press() { route(Scene::onKey3Press); }
+            @Override protected void onKey4Press() { route(Scene::onKey4Press); }
+            @Override protected void onKey5Press() { route(Scene::onKey5Press); }
+            @Override protected void onKey6Press() { route(Scene::onKey6Press); }
+            @Override protected void onKey7Press() { route(Scene::onKey7Press); }
+            @Override protected void onKey8Press() { route(Scene::onKey8Press); }
+            @Override protected void onKey9Press() { route(Scene::onKey9Press); }
+
+            @Override protected void onKeyF1Press() { route(Scene::onKeyF1Press); }
+            @Override protected void onKeyF2Press() { route(Scene::onKeyF2Press); }
+            @Override protected void onKeyF3Press() { route(Scene::onKeyF3Press); }
+            @Override protected void onKeyF4Press() { route(Scene::onKeyF4Press); }
+            @Override protected void onKeyF5Press() { route(Scene::onKeyF5Press); }
+            @Override protected void onKeyF6Press() { route(Scene::onKeyF6Press); }
+            @Override protected void onKeyF7Press() { route(Scene::onKeyF7Press); }
+            @Override protected void onKeyF8Press() { route(Scene::onKeyF8Press); }
+            @Override protected void onKeyF9Press() { route(Scene::onKeyF9Press); }
+            @Override protected void onKeyF10Press() { route(Scene::onKeyF10Press); }
+            @Override protected void onKeyF11Press() { route(Scene::onKeyF11Press); }
+            @Override protected void onKeyF12Press() { route(Scene::onKeyF12Press); }
+
+            @Override protected void onKeyShiftPress() { route(Scene::onKeyShiftPress); }
+            @Override protected void onKeyCtrlPress() { route(Scene::onKeyCtrlPress); }
+            @Override protected void onKeyAltPress() { route(Scene::onKeyAltPress); }
+            @Override protected void onKeySpacePress() { route(Scene::onKeySpacePress); }
+            @Override protected void onKeyEnterPress() { route(Scene::onKeyEnterPress); }
+            @Override protected void onKeyTabPress() { route(Scene::onKeyTabPress); }
+            @Override protected void onKeyBackspacePress() { route(Scene::onKeyBackspacePress); }
+
+            @Override protected void onKeyUpPress() { route(Scene::onKeyUpPress); }
+            @Override protected void onKeyDownPress() { route(Scene::onKeyDownPress); }
+            @Override protected void onKeyLeftPress() { route(Scene::onKeyLeftPress); }
+            @Override protected void onKeyRightPress() { route(Scene::onKeyRightPress); }
+
+            @Override protected void onKeyARelease() { route(Scene::onKeyARelease); }
+            @Override protected void onKeyBRelease() { route(Scene::onKeyBRelease); }
+            @Override protected void onKeyCRelease() { route(Scene::onKeyCRelease); }
+            @Override protected void onKeyDRelease() { route(Scene::onKeyDRelease); }
+            @Override protected void onKeyERelease() { route(Scene::onKeyERelease); }
+            @Override protected void onKeyFRelease() { route(Scene::onKeyFRelease); }
+            @Override protected void onKeyGRelease() { route(Scene::onKeyGRelease); }
+            @Override protected void onKeyHRelease() { route(Scene::onKeyHRelease); }
+            @Override protected void onKeyIRelease() { route(Scene::onKeyIRelease); }
+            @Override protected void onKeyJRelease() { route(Scene::onKeyJRelease); }
+            @Override protected void onKeyKRelease() { route(Scene::onKeyKRelease); }
+            @Override protected void onKeyLRelease() { route(Scene::onKeyLRelease); }
+            @Override protected void onKeyMRelease() { route(Scene::onKeyMRelease); }
+            @Override protected void onKeyNRelease() { route(Scene::onKeyNRelease); }
+            @Override protected void onKeyORelease() { route(Scene::onKeyORelease); }
+            @Override protected void onKeyPRelease() { route(Scene::onKeyPRelease); }
+            @Override protected void onKeyQRelease() { route(Scene::onKeyQRelease); }
+            @Override protected void onKeyRRelease() { route(Scene::onKeyRRelease); }
+            @Override protected void onKeySRelease() { route(Scene::onKeySRelease); }
+            @Override protected void onKeyTRelease() { route(Scene::onKeyTRelease); }
+            @Override protected void onKeyURelease() { route(Scene::onKeyURelease); }
+            @Override protected void onKeyVRelease() { route(Scene::onKeyVRelease); }
+            @Override protected void onKeyWRelease() { route(Scene::onKeyWRelease); }
+            @Override protected void onKeyXRelease() { route(Scene::onKeyXRelease); }
+            @Override protected void onKeyYRelease() { route(Scene::onKeyYRelease); }
+            @Override protected void onKeyZRelease() { route(Scene::onKeyZRelease); }
+
+            @Override protected void onKey0Release() { route(Scene::onKey0Release); }
+            @Override protected void onKey1Release() { route(Scene::onKey1Release); }
+            @Override protected void onKey2Release() { route(Scene::onKey2Release); }
+            @Override protected void onKey3Release() { route(Scene::onKey3Release); }
+            @Override protected void onKey4Release() { route(Scene::onKey4Release); }
+            @Override protected void onKey5Release() { route(Scene::onKey5Release); }
+            @Override protected void onKey6Release() { route(Scene::onKey6Release); }
+            @Override protected void onKey7Release() { route(Scene::onKey7Release); }
+            @Override protected void onKey8Release() { route(Scene::onKey8Release); }
+            @Override protected void onKey9Release() { route(Scene::onKey9Release); }
+
+            @Override protected void onKeyF1Release() { route(Scene::onKeyF1Release); }
+            @Override protected void onKeyF2Release() { route(Scene::onKeyF2Release); }
+            @Override protected void onKeyF3Release() { route(Scene::onKeyF3Release); }
+            @Override protected void onKeyF4Release() { route(Scene::onKeyF4Release); }
+            @Override protected void onKeyF5Release() { route(Scene::onKeyF5Release); }
+            @Override protected void onKeyF6Release() { route(Scene::onKeyF6Release); }
+            @Override protected void onKeyF7Release() { route(Scene::onKeyF7Release); }
+            @Override protected void onKeyF8Release() { route(Scene::onKeyF8Release); }
+            @Override protected void onKeyF9Release() { route(Scene::onKeyF9Release); }
+            @Override protected void onKeyF10Release() { route(Scene::onKeyF10Release); }
+            @Override protected void onKeyF11Release() { route(Scene::onKeyF11Release); }
+            @Override protected void onKeyF12Release() { route(Scene::onKeyF12Release); }
+
+            @Override protected void onKeyShiftRelease() { route(Scene::onKeyShiftRelease); }
+            @Override protected void onKeyCtrlRelease() { route(Scene::onKeyCtrlRelease); }
+            @Override protected void onKeyAltRelease() { route(Scene::onKeyAltRelease); }
+            @Override protected void onKeySpaceRelease() { route(Scene::onKeySpaceRelease); }
+            @Override protected void onKeyEnterRelease() { route(Scene::onKeyEnterRelease); }
+            @Override protected void onKeyTabRelease() { route(Scene::onKeyTabRelease); }
+            @Override protected void onKeyBackspaceRelease() { route(Scene::onKeyBackspaceRelease); }
+
+            @Override protected void onKeyUpRelease() { route(Scene::onKeyUpRelease); }
+            @Override protected void onKeyDownRelease() { route(Scene::onKeyDownRelease); }
+            @Override protected void onKeyLeftRelease() { route(Scene::onKeyLeftRelease); }
+            @Override protected void onKeyRightRelease() { route(Scene::onKeyRightRelease); }
+        };
     }
 
     public void windowSetup() {
@@ -710,6 +998,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 }
             }
         });
+
+        bindEngineKeyRouter();
     }
 
     private DisplayMode findBestDisplayMode(GraphicsDevice device, int width, int height, int bitDepth, int refreshRate) {
@@ -734,8 +1024,67 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     private void initInputEngine() {
         this.mouseAtBase = new MouseAtBase(this);
-        this.mouse.attachPendingInterface();
+        this.mouseAtBase.registerInterface(new MouseInterface() {
+            private void route(Consumer<MouseInterface> action) {
+                if (shouldBlockSceneInput()) return;
+                MouseInterface userHook = mouse.getUserMouseInterface();
+                if (userHook != null) {
+                    action.accept(userHook);
+                }
+                Scene s = currentScene;
+                if (s != null) {
+                    action.accept(s);
+                }
+            }
+
+            @Override public void mouseClicked(FwMouseAPI e) { route(m -> m.mouseClicked(e)); }
+            @Override public void mousePressed(FwMouseAPI e) { route(m -> m.mousePressed(e)); }
+            @Override public void mouseReleased(FwMouseAPI e) { route(m -> m.mouseReleased(e)); }
+            @Override public void mouseEntered(FwMouseAPI e) { route(m -> m.mouseEntered(e)); }
+            @Override public void mouseExited(FwMouseAPI e) { route(m -> m.mouseExited(e)); }
+            @Override public void mouseWheelMoved(FwMouseAPI e) { route(m -> m.mouseWheelMoved(e)); }
+            @Override public void mouseDragged(FwMouseAPI e) { route(m -> m.mouseDragged(e)); }
+            @Override public void mouseMoved(FwMouseAPI e) { route(m -> m.mouseMoved(e)); }
+        });
         this.requestFocus();
+    }
+
+    private void appendScenePipelineTasks(List<LoadTask> targetQueue, Scene scene) {
+        if (scene == null) return;
+
+        targetQueue.add(new LoadTask("Initializing Scene: " + scene.name, () -> {
+            scene.DO_NOT_ACCESS.setBase(this);
+            scene.DO_NOT_ACCESS.prepareForLoad();
+            scene.init(scene.DO_NOT_ACCESS.getSceneInit());
+
+            List<LoadTask> sceneTasks = new ArrayList<>(scene.DO_NOT_ACCESS.getPendingLoadTasks());
+            List<String> lazyEvents = new ArrayList<>(scene.DO_NOT_ACCESS.getBoundLazyEvents());
+
+            for (LoadTask st : sceneTasks) {
+                targetQueue.add(st);
+            }
+
+            for (String eventKey : lazyEvents) {
+                targetQueue.add(new LoadTask("Launching Lazy Assets [" + eventKey + "]...", () -> {
+                    List<DynamicAssetObject> daos = assetManager.launchAndSnapshotEventTasks(eventKey);
+                    int totalDaos = daos.size();
+                    for (int idx = 0; idx < totalDaos; idx++) {
+                        final int dIdx = idx;
+                        final DynamicAssetObject dao = daos.get(idx);
+                        targetQueue.add(new LoadTask(
+                                String.format("Awaiting Lazy [%s] %d/%d", eventKey, dIdx + 1, totalDaos),
+                                dao::awaitCompletionOrThrow
+                        ));
+                    }
+                }));
+            }
+
+            if (scene.canSave()) {
+                targetQueue.add(new LoadTask("Loading Scene Data: " + scene.name, () -> {
+                    scene.DO_NOT_ACCESS.load();
+                }));
+            }
+        }));
     }
 
     private void startAsyncLoading() {
@@ -743,66 +1092,72 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         loadTasks.add(new LoadTask("Initializing Core System...", () -> {
             init(baseInit);
-        }));
+            onAssetInit(assetInit);
 
-        for (DynamicAsset dynamicAsset : sysLoadStack) {
-            loadTasks.add(new LoadTask("Configuring System...", dynamicAsset::load));
-        }
+            int insertIdx = 1;
+            for (DynamicAsset dynamicAsset : sysLoadStack) {
+                loadTasks.add(insertIdx++, new LoadTask("Configuring System...", dynamicAsset::load));
+            }
 
-        for (Map.Entry<String, InputStream> entry : assetInit.textureAssets.entrySet()) {
-            String key = entry.getKey();
-            InputStream is = entry.getValue();
-            loadTasks.add(new LoadTask("Loading texture: " + key, () -> {
-                Texture real = assetManager.loadTexture(AssetManager.LoadMode.SYNC, key, is, null);
-                BootTextureProxy proxy = assetInit.textureProxies.get(key);
-                if (proxy != null) proxy.setTarget(real);
+            for (Map.Entry<String, InputStream> entry : assetInit.textureAssets.entrySet()) {
+                String key = entry.getKey();
+                InputStream is = entry.getValue();
+                loadTasks.add(insertIdx++, new LoadTask("Loading texture: " + key, () -> {
+                    Texture real = assetManager.loadTexture(AssetManager.LoadMode.SYNC, key, is, null);
+                    BootTextureProxy proxy = assetInit.textureProxies.get(key);
+                    if (proxy != null) proxy.setTarget(real);
+                }));
+            }
+
+            for (Map.Entry<String, InputStream> entry : assetInit.soundAssets.entrySet()) {
+                String key = entry.getKey();
+                InputStream is = entry.getValue();
+                loadTasks.add(insertIdx++, new LoadTask("Loading sound: " + key, () -> {
+                    SoundAsset real = assetManager.loadSound(AssetManager.LoadMode.SYNC, key, is, null);
+                    AssetInit.BootSoundProxy proxy = assetInit.soundProxies.get(key);
+                    if (proxy != null) proxy.setTarget(real);
+                }));
+            }
+
+            for (Map.Entry<String, InputStream> entry : assetInit.musicAssets.entrySet()) {
+                String key = entry.getKey();
+                InputStream is = entry.getValue();
+                loadTasks.add(insertIdx++, new LoadTask("Loading music: " + key, () -> {
+                    MusicAsset real = assetManager.loadMusic(AssetManager.LoadMode.SYNC, AssetManager.MusicType.STREAM_MUSIC, key, is, null);
+                    AssetInit.BootMusicProxy proxy = assetInit.musicProxies.get(key);
+                    if (proxy != null) proxy.setTarget(real);
+                }));
+            }
+
+            for (AssetInit.BootAtlasEntry bootAtlas : assetInit.bootAtlases) {
+                loadTasks.add(insertIdx++, new LoadTask("Baking Boot Atlas: " + bootAtlas.name, () -> {
+                    bootAtlas.atlas.DO_NOT_ACCESS.bake(
+                            bootAtlas.binder.getTempTextures(),
+                            bootAtlas.binder.getPendingSprites(),
+                            bootAtlas.padding
+                    );
+                }));
+            }
+
+            loadTasks.add(insertIdx++, new LoadTask("Loading Game Data...", () -> {
+                io.load.loadStart = true;
+                io.load.load();
+                io.load.loadEnd = true;
             }));
-        }
 
-        for (Map.Entry<String, InputStream> entry : assetInit.soundAssets.entrySet()) {
-            String key = entry.getKey();
-            InputStream is = entry.getValue();
-            loadTasks.add(new LoadTask("Loading sound: " + key, () -> {
-                SoundAsset real = assetManager.loadSound(AssetManager.LoadMode.SYNC, key, is, null);
-                AssetInit.BootSoundProxy proxy = assetInit.soundProxies.get(key);
-                if (proxy != null) proxy.setTarget(real);
-            }));
-        }
-
-        for (Map.Entry<String, InputStream> entry : assetInit.musicAssets.entrySet()) {
-            String key = entry.getKey();
-            InputStream is = entry.getValue();
-            loadTasks.add(new LoadTask("Loading music: " + key, () -> {
-                MusicAsset real = assetManager.loadMusic(AssetManager.LoadMode.SYNC, AssetManager.MusicType.STREAM_MUSIC, key, is, null);
-                AssetInit.BootMusicProxy proxy = assetInit.musicProxies.get(key);
-                if (proxy != null) proxy.setTarget(real);
-            }));
-        }
-
-        loadTasks.add(new LoadTask("Loading Game Data...", () -> {
-            io.load.loadStart = true;
-            io.load.load();
-            io.load.loadEnd = true;
-        }));
-
-        loadTasks.add(new LoadTask("Initializing Scene...", () -> {
             Scene initialScene = baseInit.initScene;
             if (initialScene != null) {
-                currentLoadingMessage = "Initializing Scene: " + initialScene.name;
-                initialScene.base = this;
-                initialScene.init();
+                appendScenePipelineTasks(loadTasks, initialScene);
             }
         }));
 
         new Thread(() -> {
-            int total = loadTasks.size();
-            if (total == 0) return;
-
-            for (int i = 0; i < total; i++) {
+            for (int i = 0; i < loadTasks.size(); i++) {
+                int total = loadTasks.size();
                 LoadTask task = loadTasks.get(i);
                 addLog(task.description);
                 currentLoadingMessage = task.getDescription();
-                loadingProgress = (float) i / total;
+                loadingProgress = Math.max(loadingProgress, (float) i / Math.max(1, total));
 
                 try {
                     task.getAction().execute();
@@ -813,6 +1168,19 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             task.getDescription() + " (" + (t.getMessage() != null ? t.getMessage() : "null") + ")"
                     );
                 }
+            }
+
+            sceneLock.writeLock().lock();
+            try {
+                currentScene = baseInit.initScene;
+            } finally {
+                isSceneLoading.set(false);
+                fadeAlpha = 1.0f;
+                transitionPhase = TransitionPhase.TRANSITION_FADE_IN;
+                sceneLock.writeLock().unlock();
+            }
+            if (currentScene != null) {
+                currentScene.DO_NOT_ACCESS.notifyEnter();
             }
 
             loadingProgress = 1.0f;
@@ -842,37 +1210,139 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         startAsyncLoading();
     }
 
-    private void handleSceneTransition() {
-        if (isChangeScene.compareAndSet(true, false)) {
-            Scene nextScene = this.pendingScene;
-            this.pendingScene = null;
+    public synchronized boolean changeScene(String sceneKey) {
+        Scene target = sceneRegistry.get(sceneKey);
+        if (target == null) {
+            addErrorLog("Scene key not found in registry: " + sceneKey);
+            return false;
+        }
+        return changeScene(target);
+    }
 
-            if (nextScene != null) {
-                isSceneLoading.set(true);
+    public synchronized boolean changeScene(Scene newScene) {
+        if (newScene == null) {
+            System.err.println("new scene is null!");
+            return false;
+        }
+        if (newScene == currentScene || isTransitioning.get() || isSceneLoading.get() || isChangeScene.get()) {
+            return false;
+        }
 
-                new Thread(() -> {
-                    try {
-                        nextScene.init();
+        newScene.DO_NOT_ACCESS.setBase(this);
+        this.pendingScene = newScene;
+        this.isTransitioning.set(true);
+        this.transitionPhase = TransitionPhase.TRANSITION_FADE_OUT;
+        this.isChangeScene.set(true);
+        return true;
+    }
 
-                        sceneLock.writeLock().lock();
-                        try {
-                            if (currentScene != null) {
-                                currentScene.DO_NOT_ACCESS.dispose();
-                            }
-                            currentScene = nextScene;
-                        } finally {
-                            sceneLock.writeLock().unlock();
-                        }
-                    } catch (Throwable t) {
-                        t.printStackTrace();
-                        System.err.println("Asset loading failed! Aborting engine.");
-                        System.exit(1);
-                    } finally {
-                        isSceneLoading.set(false);
-                    }
-                }, "Scene-Loader").start();
+    private void updateSceneTransition(double dt) {
+        TransitionPhase phase = this.transitionPhase;
+        if (phase == TransitionPhase.NONE) return;
+
+        if (phase == TransitionPhase.TRANSITION_FADE_OUT) {
+            fadeAlpha += (float) (fadeSpeed * dt);
+            if (fadeAlpha >= 1.0f) {
+                fadeAlpha = 1.0f;
+                transitionPhase = TransitionPhase.TRANSITION_LOADING;
+                startSceneAsyncLoader();
+            }
+        } else if (phase == TransitionPhase.TRANSITION_FADE_IN) {
+            fadeAlpha -= (float) (fadeSpeed * dt);
+            if (fadeAlpha <= 0.0f) {
+                fadeAlpha = 0.0f;
+                transitionPhase = TransitionPhase.NONE;
+                isTransitioning.set(false);
             }
         }
+    }
+
+    private void startSceneAsyncLoader() {
+        if (!isChangeScene.compareAndSet(true, false)) return;
+
+        final Scene nextScene = this.pendingScene;
+        this.pendingScene = null;
+
+        if (nextScene == null) {
+            transitionPhase = TransitionPhase.TRANSITION_FADE_IN;
+            return;
+        }
+
+        isSceneLoading.set(true);
+        loadingProgress = 0.0f;
+        currentLoadingMessage = "Preparing Scene: " + nextScene.name;
+
+        sceneLock.writeLock().lock();
+        try {
+            if (currentScene != null) {
+                setRecoderPhase("dispose scene: " + currentScene.name);
+                currentScene.DO_NOT_ACCESS.dispose();
+                currentScene = null;
+            }
+        } finally {
+            sceneLock.writeLock().unlock();
+        }
+
+        new Thread(() -> {
+            try {
+                setRecoderPhase("init scene: " + nextScene.name);
+                List<LoadTask> sceneQueue = new ArrayList<>();
+                appendScenePipelineTasks(sceneQueue, nextScene);
+
+                for (int i = 0; i < sceneQueue.size(); i++) {
+                    int total = sceneQueue.size();
+                    LoadTask task = sceneQueue.get(i);
+                    addLog(task.getDescription());
+                    currentLoadingMessage = task.getDescription();
+                    loadingProgress = Math.max(loadingProgress, (float) i / Math.max(1, total));
+                    task.getAction().execute();
+                }
+
+                loadingProgress = 1.0f;
+                currentLoadingMessage = "Complete!";
+
+                sceneLock.writeLock().lock();
+                try {
+                    currentScene = nextScene;
+                } finally {
+                    sceneLock.writeLock().unlock();
+                }
+
+                nextScene.DO_NOT_ACCESS.notifyEnter();
+
+            } catch (Throwable t) {
+                t.printStackTrace();
+                errorBoxManager.addError(
+                        "Scene Load Error: " + t.getClass().getSimpleName(),
+                        nextScene.name + " (" + (t.getMessage() != null ? t.getMessage() : "null") + ")"
+                );
+                System.err.println("Scene loading failed: " + t.getMessage());
+            } finally {
+                isSceneLoading.set(false);
+                transitionPhase = TransitionPhase.TRANSITION_FADE_IN;
+            }
+        }, "Async-Loader").start();
+    }
+
+    private void stepEngineUpdate(double deltaTime) {
+        long cpuStartNanos = System.nanoTime();
+
+        updateSceneTransition(deltaTime);
+
+        sceneLock.readLock().lock();
+        try {
+            Scene activeScene = currentScene;
+            if (activeScene != null && !isSceneLoading.get()) {
+                activeScene.update(deltaTime);
+            }
+        } finally {
+            sceneLock.readLock().unlock();
+        }
+
+        update(deltaTime);
+
+        if (recorder != null) recorder.update();
+        recordCpuPresentedFrame(System.nanoTime() - cpuStartNanos);
     }
 
     private void threadLaunch() {
@@ -893,13 +1363,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     lastTime = now;
 
                     try {
-                        handleSceneTransition();
-
-                        if (initLoadEnd.get() && !isSceneLoading.get()) {
-                            long cpuStartNanos = System.nanoTime();
-                            update(deltaTime);
-                            if (recorder != null) recorder.update();
-                            recordCpuPresentedFrame(System.nanoTime() - cpuStartNanos);
+                        if (initLoadEnd.get()) {
+                            stepEngineUpdate(deltaTime);
                         }
 
                         renderLoop();
@@ -933,11 +1398,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     lastTime = now;
 
                     try {
-                        if (initLoadEnd.get() && !isSceneLoading.get()) {
-                            long frameStartNanos = System.nanoTime();
-                            update(deltaTime);
-                            if (recorder != null) recorder.update();
-                            recordCpuPresentedFrame(System.nanoTime() - frameStartNanos);
+                        if (initLoadEnd.get()) {
+                            stepEngineUpdate(deltaTime);
                         }
                         flushSuppressionNotice();
                         lastErrorHash = 0;
@@ -967,7 +1429,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     lastTime = now;
 
                     try {
-                        handleSceneTransition();
                         renderLoop();
                         flushSuppressionNotice();
                         lastErrorHash = 0;
@@ -1224,7 +1685,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 if (!strategy.contentsLost()) {
                     strategy.show();
                 }
-            } catch (IllegalStateException e) {
+            } catch (IllegalStateException ignored) {
             }
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
@@ -1252,9 +1713,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     try {
                         bg.setColor(Color.BLACK);
                         bg.fillRect(0, 0, bufferWidth, bufferHeight);
-
                         bg.scale((double) bufferWidth / WINDOW_WIDTH, (double) bufferHeight / WINDOW_HEIGHT);
-
                         drawCurrentFrame(bg, loadingComplete);
                     } finally {
                         bg.dispose();
@@ -1275,7 +1734,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                             try {
                                 d2.setColor(Color.BLACK);
                                 d2.fillRect(0, 0, currentWidth, currentHeight);
-
                                 d2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_NEAREST_NEIGHBOR);
 
                                 d2.drawImage(offscreenBuffer,
@@ -1333,6 +1791,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             }
 
             long frameStartNanos = System.nanoTime();
+            boolean loadingComplete = initLoadEnd.get();
 
             int retry = 0;
             do {
@@ -1350,22 +1809,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                         d2.scale(viewMetrics.getCurrentScale(), viewMetrics.getCurrentScale());
                     }
 
-                    if (!initLoadEnd.get() || isSceneLoading.get()) {
-                        renderLoadingScreen(d2);
-                    } else {
-                        sceneLock.readLock().lock();
-                        try {
-                            render(d2);
-                        } finally {
-                            sceneLock.readLock().unlock();
-                        }
-                    }
-
-                    if (Fw.Debugger.showHitbox) {
-                        Fw.Debugger.Internal.renderHitbox(d2);
-                    }
-                    if (console != null) { console.render(d2); }
-
+                    drawCurrentFrame(d2, loadingComplete);
                 } finally {
                     d2.dispose();
                 }
@@ -1398,17 +1842,33 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     private void drawCurrentFrame(Graphics2D d2, boolean loadingComplete) {
-        if (!loadingComplete || !initLoadEnd.get() || isSceneLoading.get()) {
-            renderLoadingScreen(d2);
-        } else {
-            sceneLock.readLock().lock();
-            try {
-                render(d2);
-            } finally {
-                sceneLock.readLock().unlock();
+        sceneLock.readLock().lock();
+        try {
+            Scene activeScene = currentScene;
+            if (activeScene != null) {
+                activeScene.render(d2);
             }
+        } finally {
+            sceneLock.readLock().unlock();
         }
 
+        if (!loadingComplete || !initLoadEnd.get()) {
+            renderLoadingScreen(d2);
+        }
+        else if (fadeAlpha > 0.0f || isSceneLoading.get()) {
+            Composite origComposite = d2.getComposite();
+            float alpha = Math.min(1.0f, Math.max(0.0f, fadeAlpha));
+
+            d2.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, alpha));
+            renderLoadingScreen(d2);
+            d2.setComposite(origComposite);
+        }
+
+        if (loadingComplete && initLoadEnd.get()) {
+            render(d2);
+        }
+
+        errorBoxManager.render(d2);
         if (Fw.Debugger.showHitbox) {
             Fw.Debugger.Internal.renderHitbox(d2);
         }
@@ -1470,27 +1930,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         return Math.abs(scale - Math.rint(scale)) > 0.000_001;
     }
 
+    protected void onAssetInit(AssetInit assetInit) {}
+
     public void setUp() {}
     public abstract void init(BaseInit baseInit);
-    public abstract void update(double dt);
-    public abstract void render(Graphics2D g);
+    public void update(double dt) {}
+    public void render(Graphics2D g) {}
     public void setMouse(Mouse mouse) {}
     public void setConsole(ConsoleInit consoleInit) {}
-
-    public synchronized boolean changeScene(Scene newScene) {
-        if (newScene == null) {
-            System.err.println("new scene is null!");
-            return false;
-        }
-        if (isSceneLoading.get() || isChangeScene.get()) {
-            return false;
-        }
-
-        newScene.base = this;
-        this.pendingScene = newScene;
-
-        return this.isChangeScene.compareAndSet(false, true);
-    }
 
     @Override public final int getComponentWidth() { return this.getWidth(); }
     @Override public final int getComponentHeight() { return this.getHeight(); }
@@ -1517,7 +1964,24 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     @Deprecated
     public Console getConsole() { return console; }
 
-    public final void save() { io.save.save(); }
+    public final void save() {
+        io.save.save();
+
+        Set<Scene> savedScenes = Collections.newSetFromMap(new IdentityHashMap<>());
+
+        for (Map.Entry<String, Scene> entry : sceneRegistry.entrySet()) {
+            Scene scene = entry.getValue();
+            if (scene != null && scene.canSave()) {
+                scene.DO_NOT_ACCESS.save();
+                savedScenes.add(scene);
+            }
+        }
+
+        Scene active = currentScene;
+        if (active != null && !savedScenes.contains(active) && active.canSave()) {
+            active.DO_NOT_ACCESS.save();
+        }
+    }
 
     public void exit(boolean b) {
         if (!isExiting.compareAndSet(false, true)) {
@@ -1650,7 +2114,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         this.lastErrorHash = errorHash;
         String title = String.format("[%s] %s: %s", threadName, exType, exMsg);
-        String atLine = "    at " + rootTrace;
+        String atLine = " at " + rootTrace;
         this.lastSuppressedTitle = title;
 
         if (console != null) {
@@ -1667,14 +2131,23 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         t.printStackTrace(System.err);
     }
 
-    private void renderLoadingScreen(Graphics g) {
-        g.drawImage(logo.getVolatileImage(), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, null);
+    private void renderLoadingScreen(Graphics2D g) {
+        LoadingRenderer customRenderer = this.loadingRenderer;
+        if (customRenderer != null) {
+            customRenderer.render(g, loadingProgress, currentLoadingMessage, WINDOW_WIDTH, WINDOW_HEIGHT);
+            return;
+        }
+
+        if (logo != null && logo.getVolatileImage() != null) {
+            g.drawImage(logo.getVolatileImage(), 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, null);
+        } else {
+            g.setColor(Color.BLACK);
+            g.fillRect(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+        }
         g.setFont(loadingMessageFont);
-        g.setColor(Color.black);
+        g.setColor(Color.BLACK);
         String displayMsg = String.format("%s (%.0f%%)", currentLoadingMessage, loadingProgress * 100);
-        RU.drawStringCenter(g, displayMsg, 960, 850);
-        g.setColor(Color.black);
-        errorBoxManager.render(g);
+        RU.drawStringCenter(g, displayMsg, WINDOW_WIDTH / 2, (int) (WINDOW_HEIGHT * 0.78));
     }
 
     public GraphicsConfiguration graphicsConfiguration() { return getGraphicsConfiguration(); }
