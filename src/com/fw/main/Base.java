@@ -58,7 +58,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     public static String version = "PRE 0.3.0";
     public JFrame frame = new JFrame("Olen Engine");
 
-    // --- Fullscreen and resolution states ---
     private boolean fullScreen = false;
     private boolean changeResolution = false;
     private int targetResWidth = -1;
@@ -89,9 +88,15 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     private final ReentrantReadWriteLock sceneLock = new ReentrantReadWriteLock();
 
-    private volatile int lastErrorHash = 0;
-    private final AtomicInteger suppressedCount = new AtomicInteger(0);
-    private volatile String lastSuppressedTitle = null;
+    // Per-thread error suppression state
+    private static class ErrorTracker {
+        final Set<Integer> prevFrameErrors = new HashSet<>();
+        final Set<Integer> currentFrameErrors = new HashSet<>();
+        final Map<Integer, Integer> suppressedCounts = new HashMap<>();
+        final Map<Integer, String> errorTitles = new HashMap<>();
+    }
+
+    private final ThreadLocal<ErrorTracker> errorTracker = ThreadLocal.withInitial(ErrorTracker::new);
 
     private DrawMode drawMode = DrawMode.DIRECT;
     private int bufferWidth = 1920;
@@ -136,7 +141,6 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     final AtomicBoolean initLoadEnd = new AtomicBoolean(false);
     final ArrayList<DynamicAsset> sysLoadStack = new ArrayList<>();
 
-    // --- Scene Management & Transition States ---
     private final Map<String, Scene> sceneRegistry = new ConcurrentHashMap<>();
     public final AtomicBoolean isChangeScene = new AtomicBoolean(false);
     public final AtomicBoolean isSceneLoading = new AtomicBoolean(false);
@@ -1368,10 +1372,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                         }
 
                         renderLoop();
-                        flushSuppressionNotice();
-                        lastErrorHash = 0;
                     } catch (Throwable t) {
                         logThreadException(t);
+                    } finally {
+                        flushSuppressionNotice();
                     }
 
                     nextTick += nsPerTick;
@@ -1401,10 +1405,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                         if (initLoadEnd.get()) {
                             stepEngineUpdate(deltaTime);
                         }
-                        flushSuppressionNotice();
-                        lastErrorHash = 0;
                     } catch (Throwable t) {
                         logThreadException(t);
+                    } finally {
+                        flushSuppressionNotice();
                     }
 
                     nextTick += nsPerTick;
@@ -1430,10 +1434,10 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
                     try {
                         renderLoop();
-                        flushSuppressionNotice();
-                        lastErrorHash = 0;
                     } catch (Throwable t) {
                         logThreadException(t);
+                    } finally {
+                        flushSuppressionNotice();
                     }
 
                     nextTick += nsPerTick;
@@ -2053,15 +2057,27 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     }
 
     private void flushSuppressionNotice() {
-        int count = suppressedCount.getAndSet(0);
-        if (count > 0 && lastSuppressedTitle != null) {
-            String notice = String.format("[Engine Exception] ... identical error suppressed for %d consecutive frame(s)", count);
-            if (console != null) {
-                console.addLog(Console.LogType.ERROR, notice);
+        ErrorTracker tracker = errorTracker.get();
+
+        // Flush notices for errors that resolved in the current frame
+        for (Integer hash : tracker.prevFrameErrors) {
+            if (!tracker.currentFrameErrors.contains(hash)) {
+                Integer count = tracker.suppressedCounts.remove(hash);
+                String title = tracker.errorTitles.remove(hash);
+                if (count != null && count > 0 && title != null) {
+                    String notice = String.format("[Engine Exception] ... identical error suppressed for %d consecutive frame(s): %s", count, title);
+                    if (console != null) {
+                        console.addLog(Console.LogType.ERROR, notice);
+                    }
+                    System.err.println(notice);
+                }
             }
-            System.err.println(notice);
-            lastSuppressedTitle = null;
         }
+
+        // Cycle frame error sets
+        tracker.prevFrameErrors.clear();
+        tracker.prevFrameErrors.addAll(tracker.currentFrameErrors);
+        tracker.currentFrameErrors.clear();
     }
 
     private void logThreadException(Throwable t) {
@@ -2098,10 +2114,14 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         int errorHash = 31 * threadName.hashCode() + exType.hashCode();
         errorHash = 31 * errorHash + stackKey.toString().hashCode();
 
-        if (this.lastErrorHash == errorHash) {
-            int currentSuppressed = suppressedCount.incrementAndGet();
+        ErrorTracker tracker = errorTracker.get();
+        tracker.currentFrameErrors.add(errorHash);
+
+        // Suppress if the error occurred in the previous frame
+        if (tracker.prevFrameErrors.contains(errorHash)) {
+            int currentSuppressed = tracker.suppressedCounts.merge(errorHash, 1, Integer::sum);
             if (currentSuppressed % 60 == 0) {
-                String notice = String.format("[Engine Exception] ... identical error continuously suppressed (%d frames)", currentSuppressed);
+                String notice = String.format("[Engine Exception] ... identical error continuously suppressed (%d frames) for [%s] %s", currentSuppressed, threadName, exType);
                 if (console != null) {
                     console.addLog(Console.LogType.ERROR, notice);
                 }
@@ -2110,12 +2130,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return;
         }
 
-        flushSuppressionNotice();
-
-        this.lastErrorHash = errorHash;
         String title = String.format("[%s] %s: %s", threadName, exType, exMsg);
         String atLine = " at " + rootTrace;
-        this.lastSuppressedTitle = title;
+        tracker.errorTitles.put(errorHash, title);
 
         if (console != null) {
             String[] lines = title.split("\\r?\\n");
