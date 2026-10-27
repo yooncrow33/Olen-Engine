@@ -12,6 +12,7 @@ import com.fw.main.utils.platform.system.asset.Texture;
 import com.fw.main.utils.platform.system.asset.internal.sound.kuusisto.tinysound.internal.InternalSoundModule;
 import com.fw.main.utils.platform.system.console.autoComplete.AutoCompleteManager;
 import com.fw.main.utils.platform.system.console.autoComplete.ConsoleLabel;
+import com.fw.main.utils.platform.system.scene.Atlas;
 
 import javax.imageio.ImageIO;
 import java.awt.*;
@@ -130,6 +131,10 @@ public class Console {
                 sys.then("down");
                 sys.then("gc");
 
+                sys.then("scene", scn -> {
+                    scn.then(base.getSceneKeyLabels());
+                });
+
                 sys.then("quickput", qp -> {
                     qp.then("clear");
                     qp.then("delete").then("key");
@@ -175,6 +180,19 @@ public class Console {
                         });
                         asset.then("sound", snd -> {
                             snd.then(base.assetManager.getSoundKeyLabels());
+                        });
+                        asset.then("music", msc -> {
+                            msc.then(base.assetManager.getMusicKeyLabels(), state -> {
+                                state.then("true");
+                                state.then("false");
+                            });
+                        });
+                        asset.then("atlas", atl -> {
+                            atl.then(base.assetManager.getAtlasKeyLabels(), loc -> {
+                                loc.then("desktop");
+                                loc.then("projectFolder");
+                                loc.then("exeFolder");
+                            });
                         });
                     });
                 });
@@ -663,15 +681,29 @@ public class Console {
         }
 
         switch (args.get(1)) {
+            case "scene" -> {
+                if (args.size() < 3) {
+                    addLog(LogType.ERROR, "usage: sys scene <sceneKey>");
+                    return;
+                }
+                String targetScene = args.get(2);
+                boolean success = base.changeScene(targetScene);
+                if (success) {
+                    addLog(LogType.SYSTEM, "Transitioning to scene: " + targetScene);
+                } else {
+                    addLog(LogType.ERROR, "Failed to change scene (invalid key or already transitioning): " + targetScene);
+                }
+                text.clear();
+            }
             case "debug" -> {
                 if (args.size() < 3) {
-                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <target> OR sys debug asset <texture|sound> ...");
+                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <target> OR sys debug asset <texture|sound|music|atlas> ...");
                     return;
                 }
 
                 if ("asset".equalsIgnoreCase(args.get(2))) {
                     if (args.size() < 5) {
-                        addLog(LogType.ERROR, "usage: sys debug asset texture <key> <desktop|projectFolder|exeFolder> OR sys debug asset sound <key>");
+                        addLog(LogType.ERROR, "usage: sys debug asset <texture|sound|music|atlas> <key> [desktop|projectFolder|exeFolder]");
                         return;
                     }
 
@@ -702,15 +734,10 @@ public class Console {
                                 addLog(LogType.ERROR, "unknown export location: " + targetLoc);
                                 return;
                             }
-
-                            if (!targetDir.exists()) {
-                                targetDir.mkdirs();
-                            }
+                            if (!targetDir.exists()) targetDir.mkdirs();
 
                             String cleanFileName = assetKey.replaceAll("[^a-zA-Z0-9._-]", "_");
-                            if (!cleanFileName.toLowerCase().endsWith(".png")) {
-                                cleanFileName += ".png";
-                            }
+                            if (!cleanFileName.toLowerCase().endsWith(".png")) cleanFileName += ".png";
                             File outputFile = new File(targetDir, cleanFileName);
 
                             try {
@@ -729,46 +756,71 @@ public class Console {
                             sound.play();
                             addLog(LogType.SYSTEM, "Played sound: " + assetKey);
                         }
-                        default -> addLog(LogType.ERROR, "unknown asset type: " + subType + " (use texture or sound)");
+                        case "music" -> {
+                            boolean play = true;
+                            if (args.size() >= 6) {
+                                Boolean parsed = parseBoolValue(args.get(5));
+                                if (parsed == null) {
+                                    addLog(LogType.ERROR, "invalid boolean! use true, false, 1, or 0.");
+                                    return;
+                                }
+                                play = parsed;
+                            }
+
+                            com.fw.main.utils.platform.system.asset.Music music = base.assetManager.getMusic(assetKey);
+                            if (music == null) {
+                                addLog(LogType.ERROR, "music not found: " + assetKey);
+                                return;
+                            }
+
+                            if (play) {
+                                music.play(true);
+                                addLog(LogType.SYSTEM, "Playing music (loop): " + assetKey);
+                            } else {
+                                music.stop();
+                                addLog(LogType.SYSTEM, "Stopped music: " + assetKey);
+                            }
+                        }
+                        case "atlas" -> {
+                            if (args.size() < 6) {
+                                addLog(LogType.ERROR, "usage: sys debug asset atlas <key> <desktop|projectFolder|exeFolder>");
+                                return;
+                            }
+                            String targetLoc = args.get(5).toLowerCase();
+                            Atlas atlas = base.assetManager.getAtlas(assetKey);
+                            if (atlas == null || atlas.getVolatileImage() == null || atlas.getVolatileImage() == null) {
+                                addLog(LogType.ERROR, "atlas not found or not baked: " + assetKey);
+                                return;
+                            }
+
+                            File targetDir = switch (targetLoc) {
+                                case "desktop" -> new File(System.getProperty("user.home"), "Desktop");
+                                case "projectfolder" -> new File(InternalUtils.getProjectFolder());
+                                case "exefolder" -> new File(System.getProperty("user.dir"));
+                                default -> null;
+                            };
+
+                            if (targetDir == null) {
+                                addLog(LogType.ERROR, "unknown export location: " + targetLoc);
+                                return;
+                            }
+                            if (!targetDir.exists()) targetDir.mkdirs();
+
+                            String cleanFileName = "atlas_" + assetKey.replaceAll("[^a-zA-Z0-9._-]", "_") + ".png";
+                            File outputFile = new File(targetDir, cleanFileName);
+
+                            try {
+                                ImageIO.write(atlas.getVolatileImage().getSnapshot(), "png", outputFile);
+                                addLog(LogType.SYSTEM, "Atlas texture dumped to: " + outputFile.getAbsolutePath());
+                            } catch (Exception e) {
+                                addLog(LogType.ERROR, "failed to export atlas texture: " + e.getMessage());
+                            }
+                        }
+                        default -> addLog(LogType.ERROR, "unknown asset type: " + subType + " (use texture, sound, music, atlas)");
                     }
                     text.clear();
                     return;
                 }
-
-                if (args.size() < 4) {
-                    addLog(LogType.ERROR, "usage: sys debug <bool|1|0> <screen|hitbox|atlas>");
-                    return;
-                }
-
-                String valStr = args.get(2);
-                String target = args.get(3).toLowerCase();
-
-                Boolean targetState = parseBoolValue(valStr);
-                if (targetState == null) {
-                    addLog(LogType.ERROR, "invalid boolean! use true, false, 1, or 0.");
-                    return;
-                }
-
-                switch (target) {
-                    case "screen" -> {
-                        this.showDebugScreen = targetState;
-                        addLog(LogType.SYSTEM, "Debug screen set to: " + this.showDebugScreen);
-                    }
-                    case "hitbox" -> {
-                        Fw.Debugger.showHitbox = targetState;
-                        addLog(LogType.SYSTEM, "Debug hitbox set to: " + targetState);
-                    }
-                    case "atlas" -> {
-                        Fw.Debugger.atlasDebugger = targetState;
-                        addLog(LogType.SYSTEM, "Debug atlas set to: " + targetState);
-                    }
-                    default -> {
-                        addLog(LogType.ERROR, "unknown target: " + target + " (use screen, hitbox, or atlas)");
-                        return;
-                    }
-                }
-
-                text.clear();
             }
             case "up" -> {
                 if (args.size() < 3) {

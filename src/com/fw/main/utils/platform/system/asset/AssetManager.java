@@ -371,9 +371,23 @@ public class AssetManager {
         return texture;
     }
 
-    public Sound getSound(String assetKey) { return soundActiveMap.get(assetKey); }
+    public Sound getSound(String assetKey) {
+        Sound sound = soundActiveMap.get(assetKey);
+        if (sound==null) {
+            return getSound("waringSound");
+        } else {
+            return sound;
+        }
+    }
 
-    public Music getMusic(String assetKey) { return musicActiveMap.get(assetKey); }
+    public Music getMusic(String assetKey) {
+        Music music = musicActiveMap.get(assetKey);
+        if (music==null) {
+            return getMusic("warningMusic");
+        } else {
+            return music;
+        }
+    }
 
     private synchronized void recycleTask(String assetKey, DynamicAssetObject dao) {
         pendingObjects.remove(assetKey, dao);

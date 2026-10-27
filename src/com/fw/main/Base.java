@@ -55,7 +55,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
     private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
-    public static String version = "PRE 0.3.0";
+    public static String version = "PRE 0.4.0";
     public JFrame frame = new JFrame("Olen Engine");
 
     private boolean fullScreen = false;
@@ -1190,6 +1190,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             loadingProgress = 1.0f;
             currentLoadingMessage = "Complete!";
             initLoadEnd.set(true);
+            start();
         }, "Async-Loader").start();
     }
 
@@ -1208,6 +1209,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         } else {
             logo = assetManager.loadTexture(AssetManager.LoadMode.SYNC, "engine_logo", InternalUtils.getEngineResourceStream("Olen.png"), null);
             assetInit.registerBootTexture("wrong", InternalUtils.getEngineResourceStream("WrongTexture.png"));
+            assetInit.registerBootSound("waringSound", InternalUtils.getEngineResourceStream("WarningSound.wav"));
+            assetInit.registerBootMusic("warningMusic", InternalUtils.getEngineResourceStream("WarningMusic.wav"));
         }
 
         threadLaunch();
@@ -1938,6 +1941,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
     public void setUp() {}
     public abstract void init(BaseInit baseInit);
+    public void start() {}
     public void update(double dt) {}
     public void render(Graphics2D g) {}
     public void setMouse(Mouse mouse) {}

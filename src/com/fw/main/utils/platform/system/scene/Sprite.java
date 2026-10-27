@@ -1,8 +1,16 @@
 package com.fw.main.utils.platform.system.scene;
 
 
+import com.fw.main.Core;
+import com.fw.main.utils.graphics.simple.Tex;
+import com.fw.main.utils.io.IoUtils;
+import com.fw.main.utils.platform.system.asset.Texture;
+
+import javax.imageio.ImageIO;
 import java.awt.*;
+import java.awt.image.BufferedImage;
 import java.awt.image.VolatileImage;
+import java.io.IOException;
 
 public class Sprite {
     public int x, y;
@@ -13,6 +21,16 @@ public class Sprite {
 
     public String key;
     private Atlas atlas;
+
+    public static BufferedImage wrongTexture;
+
+    static {
+        try {
+            wrongTexture = ImageIO.read(IoUtils.getGameResourceStream("WrongTexture.png"));
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
 
     Sprite(String key) {
         this.key = key;
@@ -41,12 +59,20 @@ public class Sprite {
     
     public void draw(Graphics2D g, int destX, int destY, int destW, int destH) {
         VolatileImage vImg = atlas.getVolatileImage();
-        if (vImg == null || destW <= 0 || destH <= 0 || originalW <= 0 || originalH <= 0) return;
 
         int renderX = destX + (trimX * destW) / originalW;
         int renderY = destY + (trimY * destH) / originalH;
         int renderW = (w * destW) / originalW;
         int renderH = (h * destH) / originalH;
+
+        if (vImg == null || destW <= 0 || destH <= 0 || originalW <= 0 || originalH <= 0 && Core.get().isSafeRuntime()) {
+            g.drawImage(
+                    wrongTexture,
+                    renderX, renderY, renderX + renderW, renderY + renderH,
+                    x, y, x + w, y + h,
+                    null
+            );
+        }
 
         g.drawImage(
                 vImg,
@@ -58,10 +84,17 @@ public class Sprite {
 
     public void drawRawPx(Graphics2D g, int destX, int destY) {
         VolatileImage vImg = atlas.getVolatileImage();
-        if (vImg == null) return;
-
         int renderX = destX + trimX;
         int renderY = destY + trimY;
+
+        if (vImg == null && Core.get().isSafeRuntime()) {
+            g.drawImage(
+                    wrongTexture,
+                    renderX, renderY, renderX + w, renderY + h,
+                    x, y, x + w, y + h,
+                    null
+            );
+        }
 
         g.drawImage(
                 vImg,
