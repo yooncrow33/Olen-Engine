@@ -52,7 +52,12 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
 public abstract class Base extends Canvas implements IFrameSize, PerformanceRecorder.BaseWorkTimeProvider, AccessConsole {
-    private static final long RESIZE_SETTLE_NANOS = 150_000_000L;
+    private long resizeSettleNanos = 150_000_000L;
+    private int shutdownTimeoutMs = 2000;
+    private int bufferStrategyCount = 2;
+    private int renderRetryCount = 3;
+    private int cursorWidth = 32;
+    private int cursorHeight = 32;
 
     PerformanceRecorder.CaptureMode captureMode = PerformanceRecorder.CaptureMode.DO_NOT;
     public static String version = "PRE 0.4.0";
@@ -285,6 +290,13 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         this.fadeSpeed = builder.fadeSpeed;
         this.loadingRenderer = builder.loadingRenderer;
 
+        this.resizeSettleNanos = builder.resizeSettleNanos;
+        this.shutdownTimeoutMs = builder.shutdownTimeoutMs;
+        this.bufferStrategyCount = builder.bufferStrategyCount;
+        this.renderRetryCount = builder.renderRetryCount;
+        this.cursorWidth = builder.cursorWidth;
+        this.cursorHeight = builder.cursorHeight;
+
         captureMode = builder.performanceRecorderOption;
 
         this.recorder = new PerformanceRecorder(this, this, builder.performanceRecorderOption);
@@ -342,6 +354,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         OS_SLEEP, HYBRID, BUSY_WAIT
     }
 
+
     public static class Builder {
         public static final float DEFAULT_FADE_SPEED = 2.5f;
 
@@ -376,87 +389,39 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         float fadeSpeed = DEFAULT_FADE_SPEED;
         LoadingRenderer loadingRenderer = null;
 
+        long resizeSettleNanos = 150_000_000L;
+        int shutdownTimeoutMs = 2000;
+        int bufferStrategyCount = 2;
+        int renderRetryCount = 3;
+        int cursorWidth = 32;
+        int cursorHeight = 32;
+
         public Builder setCoreConfig(Config.Builder config) {
             coreConfig = java.util.Objects.requireNonNull(config); coreConfigValue = null; return this;
         }
         public Builder setCoreConfig(Config config) {
             coreConfigValue = java.util.Objects.requireNonNull(config); coreConfig = null; return this;
         }
-
-        public Builder setStringKey(String stringKey) {
-            this.stringKey = stringKey;
-            return this;
-        }
-
-        public Builder setIntegerKey(Integer integerKey) {
-            this.integerKey = integerKey;
-            return this;
-        }
-
-        public Builder setUseConsole(boolean b) {
-            this.consoleUse = b;
-            return this;
-        }
-
-        public Builder setRenderingOption(RenderingOption renderingOption) {
-            this.renderingOption = renderingOption;
-            return this;
-        }
-
-        public Builder setWaitMode(WaitMode waitMode) {
-            this.waitMode = java.util.Objects.requireNonNull(waitMode);
-            return this;
-        }
-
-        public Builder setThreadMode(ThreadMode threadMode) {
-            this.threadMode = java.util.Objects.requireNonNull(threadMode);
-            return this;
-        }
+        public Builder setStringKey(String stringKey) { this.stringKey = stringKey; return this; }
+        public Builder setIntegerKey(Integer integerKey) { this.integerKey = integerKey; return this; }
+        public Builder setUseConsole(boolean b) { this.consoleUse = b; return this; }
+        public Builder setRenderingOption(RenderingOption renderingOption) { this.renderingOption = renderingOption; return this; }
+        public Builder setWaitMode(WaitMode waitMode) { this.waitMode = java.util.Objects.requireNonNull(waitMode); return this; }
+        public Builder setThreadMode(ThreadMode threadMode) { this.threadMode = java.util.Objects.requireNonNull(threadMode); return this; }
 
         public Builder setPerformanceRecorderOption(PerformanceRecorder.CaptureMode performanceRecorderOption, String dumpPerformanceDataFileName) {
-            this.performanceRecorderOption = performanceRecorderOption;
-            this.dumpPerformanceDataFileName = dumpPerformanceDataFileName;
-            return this;
+            this.performanceRecorderOption = performanceRecorderOption; this.dumpPerformanceDataFileName = dumpPerformanceDataFileName; return this;
         }
 
-        public Builder setCloseWindowWithKillVM(boolean closeWindowWithKillVM) {
-            this.closeWindowWithKillVM = closeWindowWithKillVM;
-            return this;
-        }
+        public Builder setCloseWindowWithKillVM(boolean closeWindowWithKillVM) { this.closeWindowWithKillVM = closeWindowWithKillVM; return this; }
+        public Builder setCrtJitterEnabled(boolean crtJitterEnabled) { this.crtJitterEnabled = crtJitterEnabled; return this; }
+        public Builder setTitle(String title) { this.title = title; return this; }
+        public Builder setFullScreen(boolean fullScreen) { this.fullScreen = fullScreen; return this; }
 
-        public Builder setCrtJitterEnabled(boolean crtJitterEnabled) {
-            this.crtJitterEnabled = crtJitterEnabled;
-            return this;
-        }
-
-        public Builder setTitle(String title) {
-            this.title = title;
-            return this;
-        }
-
-        public Builder setFullScreen(boolean fullScreen) {
-            this.fullScreen = fullScreen;
-            return this;
-        }
-
-        public Builder setDisplayResolution(int width, int height) {
-            return setDisplayResolution(width, height, DisplayMode.BIT_DEPTH_MULTI, DisplayMode.REFRESH_RATE_UNKNOWN);
-        }
-
-        public Builder setVirtualScreenWidth(int virtualScreenWidth) {
-            this.virtualScreenWidth = virtualScreenWidth;
-            return this;
-        }
-
-        public Builder setVirtualScreenHeight(int virtualScreenHeight) {
-            this.virtualScreenHeight = virtualScreenHeight;
-            return this;
-        }
-
-        public Builder setUseEngineCursor(boolean useEngineCursor) {
-            this.useEngineCursor = useEngineCursor;
-            return this;
-        }
+        public Builder setDisplayResolution(int width, int height) { return setDisplayResolution(width, height, DisplayMode.BIT_DEPTH_MULTI, DisplayMode.REFRESH_RATE_UNKNOWN);}
+        public Builder setVirtualScreenWidth(int virtualScreenWidth) { this.virtualScreenWidth = virtualScreenWidth; return this; }
+        public Builder setVirtualScreenHeight(int virtualScreenHeight) { this.virtualScreenHeight = virtualScreenHeight; return this; }
+        public Builder setUseEngineCursor(boolean useEngineCursor) { this.useEngineCursor = useEngineCursor; return this; }
 
         public Builder setDisplayResolution(int width, int height, int bitDepth, int refreshRate) {
             this.changeResolution = true;
@@ -467,27 +432,21 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             return this;
         }
 
-        public Builder setDrawMode(DrawMode drawMode) {
-            this.drawMode = java.util.Objects.requireNonNull(drawMode);
-            return this;
-        }
-
+        public Builder setDrawMode(DrawMode drawMode) { this.drawMode = java.util.Objects.requireNonNull(drawMode); return this; }
         public Builder setBufferSize(int bufferWidth, int bufferHeight) {
-            this.bufferWidth = bufferWidth;
-            this.bufferHeight = bufferHeight;
-            return this;
+            this.bufferWidth = bufferWidth; this.bufferHeight = bufferHeight; return this;
         }
 
         public Builder setFadeSpeed(float fadeSpeed) {
-            if (fadeSpeed <= 0.0f) throw new IllegalArgumentException("fadeSpeed must be > 0");
-            this.fadeSpeed = fadeSpeed;
-            return this;
+            if (fadeSpeed <= 0.0f) throw new IllegalArgumentException("fadeSpeed must be > 0"); this.fadeSpeed = fadeSpeed; return this;
         }
+        public Builder setLoadingRenderer(LoadingRenderer loadingRenderer) { this.loadingRenderer = loadingRenderer; return this; }
 
-        public Builder setLoadingRenderer(LoadingRenderer loadingRenderer) {
-            this.loadingRenderer = loadingRenderer;
-            return this;
-        }
+        public Builder setResizeSettleNanos(long nanos) { this.resizeSettleNanos = nanos; return this; }
+        public Builder setShutdownTimeoutMs(int ms) { this.shutdownTimeoutMs = ms; return this; }
+        public Builder setBufferStrategyCount(int count) { this.bufferStrategyCount = count; return this; }
+        public Builder setRenderRetryCount(int count) { this.renderRetryCount = count; return this; }
+        public Builder setCursorSize(int width, int height) { this.cursorWidth = width; this.cursorHeight = height; return this; }
 
         private void loadSavedValues() {
             consoleUse = savedBoolean("base.consoleUse", consoleUse);
@@ -505,6 +464,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 virtualScreenWidth = Integer.parseInt(SettingFiles.read("base.virtualScreenWidth", String.valueOf(virtualScreenWidth)));
                 useEngineCursor = savedBoolean("base.useEngineCursor", useEngineCursor);
                 drawMode = DrawMode.valueOf(SettingFiles.read("base.drawMode", drawMode.name()));
+                resizeSettleNanos = Long.parseLong(SettingFiles.read("base.resizeSettleNanos", String.valueOf(resizeSettleNanos)));
+                shutdownTimeoutMs = Integer.parseInt(SettingFiles.read("base.shutdownTimeoutMs", String.valueOf(shutdownTimeoutMs)));
+                bufferStrategyCount = Integer.parseInt(SettingFiles.read("base.bufferStrategyCount", String.valueOf(bufferStrategyCount)));
+                renderRetryCount = Integer.parseInt(SettingFiles.read("base.renderRetryCount", String.valueOf(renderRetryCount)));
+                cursorWidth = Integer.parseInt(SettingFiles.read("base.cursorWidth", String.valueOf(cursorWidth)));
+                cursorHeight = Integer.parseInt(SettingFiles.read("base.cursorHeight", String.valueOf(cursorHeight)));
             } catch (NumberFormatException ignored) {}
 
             try {
@@ -553,6 +518,12 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             SettingFiles.write("base.bufferWidth", Integer.toString(bufferWidth));
             SettingFiles.write("base.bufferHeight", Integer.toString(bufferHeight));
             SettingFiles.write("base.fadeSpeed", Float.toString(fadeSpeed));
+            SettingFiles.write("base.resizeSettleNanos", Long.toString(resizeSettleNanos));
+            SettingFiles.write("base.shutdownTimeoutMs", Integer.toString(shutdownTimeoutMs));
+            SettingFiles.write("base.bufferStrategyCount", Integer.toString(bufferStrategyCount));
+            SettingFiles.write("base.renderRetryCount", Integer.toString(renderRetryCount));
+            SettingFiles.write("base.cursorWidth", Integer.toString(cursorWidth));
+            SettingFiles.write("base.cursorHeight", Integer.toString(cursorHeight));
         }
 
         private static boolean savedBoolean(String name, boolean fallback) {
@@ -917,8 +888,8 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 if (is != null) {
                     BufferedImage cursorImg = javax.imageio.ImageIO.read(is);
 
-                    int targetWidth = 32;
-                    int targetHeight = 32;
+                    int targetWidth = this.cursorWidth;
+                    int targetHeight = this.cursorHeight;
 
                     Image scaled = cursorImg.getScaledInstance(targetWidth, targetHeight, Image.SCALE_SMOOTH);
                     BufferedImage resizedCursorImg = new BufferedImage(targetWidth, targetHeight, BufferedImage.TYPE_INT_ARGB);
@@ -943,7 +914,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
         setBackground(Color.BLACK);
         viewMetrics.calculateViewMetrics();
 
-        this.createBufferStrategy(2);
+        this.createBufferStrategy(this.bufferStrategyCount);
         this.bufferStrategy = this.getBufferStrategy();
 
         this.addMouseMotionListener(new MouseMotionAdapter() {
@@ -974,13 +945,13 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             @Override
             public void componentResized(ComponentEvent e) {
                 viewMetrics.calculateViewMetrics();
-                renderPausedUntilNanos = System.nanoTime() + RESIZE_SETTLE_NANOS;
+                renderPausedUntilNanos = System.nanoTime() + resizeSettleNanos;
             }
 
             @Override
             public void componentMoved(ComponentEvent e) {
                 viewMetrics.calculateViewMetrics();
-                renderPausedUntilNanos = System.nanoTime() + RESIZE_SETTLE_NANOS;
+                renderPausedUntilNanos = System.nanoTime() + resizeSettleNanos;
             }
         });
 
@@ -988,7 +959,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
             @Override
             public void componentMoved(ComponentEvent e) {
                 viewMetrics.calculateViewMetrics();
-                renderPausedUntilNanos = System.nanoTime() + RESIZE_SETTLE_NANOS;
+                renderPausedUntilNanos = System.nanoTime() + resizeSettleNanos;
             }
         });
 
@@ -1619,7 +1590,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } finally {
                     vg.dispose();
                 }
-            } while (running.get() && vramBuffer.contentsLost() && ++retry < 3);
+            } while (running.get() && vramBuffer.contentsLost() && ++retry < renderRetryCount);
 
             if (!running.get() || vramBuffer.contentsLost()) return;
 
@@ -1640,7 +1611,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 } finally {
                     p1G.dispose();
                 }
-            } while (running.get() && vramPass1.contentsLost() && ++retry < 3);
+            } while (running.get() && vramPass1.contentsLost() && ++retry < renderRetryCount);
 
             if (!running.get() || vramPass1.contentsLost()) return;
 
@@ -1687,7 +1658,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     } finally {
                         d2.dispose();
                     }
-                } while (running.get() && strategy.contentsRestored() && ++retry < 3);
+                } while (running.get() && strategy.contentsRestored() && ++retry < renderRetryCount);
 
                 if (!strategy.contentsLost()) {
                     strategy.show();
@@ -1725,7 +1696,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                     } finally {
                         bg.dispose();
                     }
-                } while (running.get() && offscreenBuffer.contentsLost() && ++retry < 3);
+                } while (running.get() && offscreenBuffer.contentsLost() && ++retry < renderRetryCount);
 
                 if (!running.get() || offscreenBuffer.contentsLost()) return;
 
@@ -1842,7 +1813,7 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
                 }
                 bufferStrategy.show();
 
-            } while (running.get() && vramBuffer.contentsLost() && ++retry < 3);
+            } while (running.get() && vramBuffer.contentsLost() && ++retry < renderRetryCount);
 
             recordPresentedFrame(System.nanoTime() - frameStartNanos);
         }
@@ -2000,9 +1971,9 @@ public abstract class Base extends Canvas implements IFrameSize, PerformanceReco
 
         new Thread(() -> {
             try {
-                if (mainLoopThread != null) mainLoopThread.join(2000);
-                if (logicThread != null) logicThread.join(2000);
-                if (renderThread != null) renderThread.join(2000);
+                if (mainLoopThread != null) mainLoopThread.join(this.shutdownTimeoutMs);
+                if (logicThread != null) logicThread.join(this.shutdownTimeoutMs);
+                if (renderThread != null) renderThread.join(this.shutdownTimeoutMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }

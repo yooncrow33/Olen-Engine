@@ -156,6 +156,24 @@ public class EngineSettingEditor extends JFrame {
         row = addField(formPanel, gbc, row, "base.dumpPerformanceDataFileName",
                 new JTextField(readConfig("base.dumpPerformanceDataFileName", "")));
 
+        row = addField(formPanel, gbc, row, "base.resizeSettleNanos",
+                createLongSpinner(readLong("base.resizeSettleNanos", 150_000_000L), 0L, 2_000_000_000L, 10_000_000L));
+
+        row = addField(formPanel, gbc, row, "base.shutdownTimeoutMs",
+                createSpinner(readInt("base.shutdownTimeoutMs", 2000), 100, 10000));
+
+        row = addField(formPanel, gbc, row, "base.bufferStrategyCount",
+                createSpinner(readInt("base.bufferStrategyCount", 2), 1, 5));
+
+        row = addField(formPanel, gbc, row, "base.renderRetryCount",
+                createSpinner(readInt("base.renderRetryCount", 3), 1, 10));
+
+        row = addField(formPanel, gbc, row, "base.cursorWidth",
+                createSpinner(readInt("base.cursorWidth", 32), 8, 128));
+
+        row = addField(formPanel, gbc, row, "base.cursorHeight",
+                createSpinner(readInt("base.cursorHeight", 32), 8, 128));
+
         JScrollPane scrollPane = new JScrollPane(formPanel);
         scrollPane.getVerticalScrollBar().setUnitIncrement(16);
 
@@ -231,8 +249,13 @@ public class EngineSettingEditor extends JFrame {
                 }
             } else if (comp instanceof JSpinner) {
                 JSpinner spinner = (JSpinner) comp;
-                int val = readInt(key, (Integer) spinner.getValue());
-                spinner.setValue(val);
+                if (spinner.getValue() instanceof Long) {
+                    long val = readLong(key, (Long) spinner.getValue());
+                    spinner.setValue(val);
+                } else {
+                    int val = readInt(key, (Integer) spinner.getValue());
+                    spinner.setValue(val);
+                }
             } else if (comp instanceof JTextField) {
                 ((JTextField) comp).setText(readConfig(key, ""));
             }
@@ -306,5 +329,19 @@ public class EngineSettingEditor extends JFrame {
         } else {
             System.exit(0);
         }
+    }
+
+    private long readLong(String key, long fallback) {
+        try {
+            return Long.parseLong(readConfig(key, String.valueOf(fallback)));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    private JSpinner createLongSpinner(long initial, long min, long max, long step) {
+        long clamped = Math.max(min, Math.min(max, initial));
+        SpinnerNumberModel model = new SpinnerNumberModel(clamped, min, max, step);
+        return new JSpinner(model);
     }
 }
